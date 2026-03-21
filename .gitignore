@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+build/
+DerivedData/
+*.xcworkspace
+!default.xcworkspace
+xcuserdata/
+*.sublime-project
+*.sublime-workspace
+*.xcuserstate
+
+# Binaries (optional, but keeping DMG for your easy sharing)
+# *.dmg 

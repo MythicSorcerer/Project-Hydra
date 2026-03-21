@@ -1,91 +1,1059 @@
-//
-//  GameScene.swift
-//  Project Hydra
-//
-//  Created by Ximo Tu on 3/14/26.
-//
-
 import SpriteKit
 import GameplayKit
 
-class GameScene: SKScene {
+// -----------------------------------------------------------------------------
+// MARK: - Constants & Physics
+// -----------------------------------------------------------------------------
+
+struct PhysicsCategory {
+    static let none: UInt32 = 0
+    static let player: UInt32 = 0x1 << 0
+    static let playerProjectile: UInt32 = 0x1 << 1
+    static let enemy: UInt32 = 0x1 << 2
+    static let enemyProjectile: UInt32 = 0x1 << 3
+    static let ground: UInt32 = 0x1 << 4
+    static let boss: UInt32 = 0x1 << 5
+    static let wall: UInt32 = 0x1 << 6
+    static let trap: UInt32 = 0x1 << 7
+    static let movingPlatform: UInt32 = 0x1 << 8
+    static let portal: UInt32 = 0x1 << 9
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Player
+// -----------------------------------------------------------------------------
+
+class Player: SKSpriteNode {
     
-    private var label : SKLabelNode?
-    private var spinnyNode : SKShapeNode?
+    private var facingRight = true
+    var isGrounded = false
+    var health = 100
+    var maxHealth = 100
+    var isInvulnerable = false
+    
+    init() {
+        let texture = SKTexture(imageNamed: "PlayerIdle")
+        let targetSize = CGSize(width: 48, height: 48)
+        super.init(texture: texture, color: .white, size: targetSize)
+        
+        self.name = "player"
+        self.zPosition = 10
+        
+        self.physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 30, height: 45))
+        self.physicsBody?.categoryBitMask = PhysicsCategory.player
+        self.physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.enemyProjectile | PhysicsCategory.boss | PhysicsCategory.ground | PhysicsCategory.trap | PhysicsCategory.portal
+        self.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall | PhysicsCategory.movingPlatform
+        self.physicsBody?.allowsRotation = false
+        self.physicsBody?.restitution = 0.0
+        self.physicsBody?.friction = 0.2
+        self.physicsBody?.linearDamping = 0.1
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func move(direction: CGFloat) {
+        let speed: CGFloat = 400
+        self.physicsBody?.velocity.dx = direction * speed
+        
+        if direction > 0 && !facingRight {
+            self.xScale = 1
+            facingRight = true
+        } else if direction < 0 && facingRight {
+            self.xScale = -1
+            facingRight = false
+        }
+        
+        if direction != 0 {
+            if self.action(forKey: "run") == nil {
+                let runTexture = SKTexture(imageNamed: "PlayerRun")
+                let idleTexture = SKTexture(imageNamed: "PlayerIdle")
+                let anim = SKAction.animate(with: [runTexture, idleTexture], timePerFrame: 0.1)
+                self.run(SKAction.repeatForever(anim), withKey: "run")
+            }
+        } else {
+            self.removeAction(forKey: "run")
+            self.texture = SKTexture(imageNamed: "PlayerIdle")
+        }
+    }
+    
+    func jump() {
+        if isGrounded {
+            self.physicsBody?.velocity.dy = 0 
+            self.physicsBody?.applyImpulse(CGVector(dx: 0, dy: 65))
+            isGrounded = false
+        }
+    }
+    
+    func shoot(scene: SKScene) {
+        let bullet = SKSpriteNode(imageNamed: "BulletPlayer")
+        bullet.size = CGSize(width: 16, height: 8)
+        bullet.position = self.position
+        bullet.position.x += facingRight ? 25 : -25
+        bullet.zPosition = 9
+        
+        bullet.physicsBody = SKPhysicsBody(rectangleOf: bullet.size)
+        bullet.physicsBody?.categoryBitMask = PhysicsCategory.playerProjectile
+        bullet.physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.boss
+        bullet.physicsBody?.collisionBitMask = PhysicsCategory.none
+        bullet.physicsBody?.affectedByGravity = false
+        
+        let speed: CGFloat = 1000
+        let velocity = facingRight ? CGVector(dx: speed, dy: 0) : CGVector(dx: -speed, dy: 0)
+        bullet.physicsBody?.velocity = velocity
+        
+        scene.addChild(bullet)
+        
+        bullet.run(SKAction.sequence([
+            SKAction.wait(forDuration: 1.5),
+            SKAction.removeFromParent()
+        ]))
+    }
+    
+    func takeDamage(_ amount: Int) {
+        if isInvulnerable || health <= 0 { return }
+        
+        health -= amount
+        if health < 0 { health = 0 }
+        
+        hit()
+        
+        // Brief invulnerability
+        isInvulnerable = true
+        self.run(SKAction.sequence([
+            SKAction.wait(forDuration: 1.0),
+            SKAction.run { self.isInvulnerable = false }
+        ]))
+    }
+    
+    func hit() {
+        let flashRed = SKAction.sequence([
+            SKAction.colorize(with: .red, colorBlendFactor: 1.0, duration: 0.05),
+            SKAction.colorize(with: .white, colorBlendFactor: 0.0, duration: 0.05)
+        ])
+        self.run(SKAction.repeat(flashRed, count: 3))
+    }
+    
+    func reset() {
+        health = maxHealth
+        isInvulnerable = false
+        self.alpha = 1.0
+        self.colorBlendFactor = 0.0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Enemy
+// -----------------------------------------------------------------------------
+
+enum EnemyType {
+    case walker
+    case flyer
+    case miniboss
+    case boss
+    case hydraHead
+    case hydraSpawn
+}
+
+class Enemy: SKSpriteNode {
+    
+    var type: EnemyType
+    var health: Int
+    var maxHealth: Int
+    var bossName: String?
+    private var moveDir: CGFloat = -1
+    private var attackCooldown: TimeInterval = 0
+    private var vulnerableSpot: SKShapeNode?
+    
+    init(type: EnemyType) {
+        self.type = type
+        
+        var textureName = "EnemyWalker"
+        var size = CGSize(width: 50, height: 50)
+        var hp = 3
+        var name: String? = nil
+        
+        switch type {
+        case .walker:
+            textureName = "EnemyWalker"
+            hp = 3
+        case .flyer:
+            textureName = "EnemyFlyer"
+            hp = 2
+        case .miniboss:
+            textureName = "Miniboss"
+            size = CGSize(width: 120, height: 100)
+            hp = 50
+            name = "HEAVY ASSAULT TANK"
+        case .boss:
+            textureName = "BossGatekeeper"
+            size = CGSize(width: 180, height: 180)
+            hp = 250
+            name = "THE GATEKEEPER"
+        case .hydraHead:
+            textureName = "HydraHead"
+            size = CGSize(width: 80, height: 80)
+            hp = 100
+            name = "HYDRA HEAD"
+        case .hydraSpawn:
+            textureName = "HydraSpawn"
+            size = CGSize(width: 32, height: 32)
+            hp = 1
+        }
+        
+        self.health = hp
+        self.maxHealth = hp
+        self.bossName = name
+        
+        let texture = SKTexture(imageNamed: textureName)
+        super.init(texture: texture, color: .white, size: size)
+        
+        self.name = "enemy"
+        self.zPosition = 5
+        
+        self.physicsBody = SKPhysicsBody(rectangleOf: self.size)
+        self.physicsBody?.categoryBitMask = (type == .boss || type == .miniboss || type == .hydraHead) ? PhysicsCategory.boss : PhysicsCategory.enemy
+        self.physicsBody?.contactTestBitMask = PhysicsCategory.playerProjectile | PhysicsCategory.player
+        self.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall
+        
+        if type == .flyer || type == .hydraHead || type == .hydraSpawn {
+            self.physicsBody?.affectedByGravity = false
+        } else {
+            self.physicsBody?.affectedByGravity = true
+        }
+        
+        self.physicsBody?.allowsRotation = false
+        self.physicsBody?.friction = 0.5
+        
+        if type == .boss {
+            setupVulnerableSpot()
+        }
+    }
+    
+    func setupVulnerableSpot() {
+        let spot = SKShapeNode(circleOfRadius: 20)
+        spot.fillColor = .cyan
+        spot.strokeColor = .white
+        spot.glowWidth = 5
+        spot.position = CGPoint(x: 0, y: 40)
+        spot.name = "vulnerable_spot"
+        spot.zPosition = 6
+        self.addChild(spot)
+        self.vulnerableSpot = spot
+        
+        let pulse = SKAction.sequence([
+            SKAction.scale(to: 1.2, duration: 0.5),
+            SKAction.scale(to: 0.8, duration: 0.5)
+        ])
+        spot.run(SKAction.repeatForever(pulse))
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func update(player: Player, scene: SKScene) {
+        if health <= 0 { return }
+        
+        let dx = player.position.x - self.position.x
+        let dy = player.position.y - self.position.y
+        let dist = sqrt(dx*dx + dy*dy)
+        
+        switch type {
+        case .walker:
+            let speed: CGFloat = 80
+            let probeX = self.position.x + (moveDir * 30)
+            let probeY = self.position.y - 30
+            
+            let groundNodes = scene.nodes(at: CGPoint(x: probeX, y: probeY)).filter { $0.name == "platform" || $0.name == "ground" }
+            if groundNodes.isEmpty {
+                moveDir *= -1
+            }
+            
+            self.physicsBody?.velocity.dx = moveDir * speed
+            self.xScale = moveDir > 0 ? -1 : 1
+            
+        case .flyer, .hydraSpawn:
+            let followDist: CGFloat = type == .flyer ? 600 : 1000
+            if dist < followDist {
+                let speed: CGFloat = type == .flyer ? 120 : 200
+                let angle = atan2(dy, dx)
+                self.physicsBody?.velocity = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
+                self.xScale = dx > 0 ? -1 : 1
+                
+                if type == .flyer && Int.random(in: 0...120) < 1 {
+                    shoot(target: player.position)
+                }
+            }
+        case .miniboss:
+             if abs(dx) < 1200 {
+                let speed: CGFloat = 40
+                self.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
+                self.xScale = dx > 0 ? -1 : 1
+                 
+                 if Int.random(in: 0...100) < 1 {
+                     shoot(target: player.position)
+                 }
+                 if Int.random(in: 0...300) < 1 {
+                     shootMissile(target: player.position)
+                 }
+            }
+        case .boss:
+            if abs(dx) < 1500 {
+                let speed: CGFloat = 30
+                self.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
+                self.xScale = dx > 0 ? -1 : 1
+                 
+                if Int.random(in: 0...60) < 1 {
+                    shoot(target: player.position)
+                }
+                
+                if Int.random(in: 0...240) < 1 {
+                    beamAttack(player: player)
+                }
+            }
+        case .hydraHead:
+            if dist < 800 {
+                let speed: CGFloat = 150
+                let angle = atan2(dy, dx)
+                self.physicsBody?.velocity = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
+            }
+        }
+    }
+    
+    func shoot(target: CGPoint) {
+        let bullet = SKSpriteNode(imageNamed: "BulletEnemy")
+        bullet.size = CGSize(width: 15, height: 15)
+        bullet.position = self.position
+        bullet.zPosition = 9
+        
+        bullet.physicsBody = SKPhysicsBody(circleOfRadius: 7)
+        bullet.physicsBody?.categoryBitMask = PhysicsCategory.enemyProjectile
+        bullet.physicsBody?.contactTestBitMask = PhysicsCategory.player
+        bullet.physicsBody?.collisionBitMask = PhysicsCategory.none
+        bullet.physicsBody?.affectedByGravity = false
+        
+        let dx = target.x - self.position.x
+        let dy = target.y - self.position.y
+        let angle = atan2(dy, dx)
+        let speed: CGFloat = 350
+        
+        bullet.physicsBody?.velocity = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
+        
+        self.scene?.addChild(bullet)
+        
+        bullet.run(SKAction.sequence([
+            SKAction.wait(forDuration: 4.0),
+            SKAction.removeFromParent()
+        ]))
+    }
+    
+    func shootMissile(target: CGPoint) {
+        let missile = SKShapeNode(rectOf: CGSize(width: 40, height: 15), cornerRadius: 5)
+        missile.fillColor = .orange
+        missile.strokeColor = .red
+        missile.position = self.position
+        missile.zPosition = 8
+        
+        missile.physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 40, height: 15))
+        missile.physicsBody?.categoryBitMask = PhysicsCategory.enemyProjectile
+        missile.physicsBody?.contactTestBitMask = PhysicsCategory.player
+        missile.physicsBody?.collisionBitMask = PhysicsCategory.none
+        missile.physicsBody?.affectedByGravity = false
+        
+        let dx = target.x - self.position.x
+        let dy = target.y - self.position.y
+        let angle = atan2(dy, dx)
+        missile.zRotation = angle
+        
+        self.scene?.addChild(missile)
+        
+        let moveAction = SKAction.move(by: CGVector(dx: cos(angle) * 2000, dy: sin(angle) * 2000), duration: 5.0)
+        missile.run(SKAction.sequence([
+            moveAction,
+            SKAction.removeFromParent()
+        ]))
+    }
+    
+    func beamAttack(player: Player) {
+        let beam = SKShapeNode()
+        let path = CGMutablePath()
+        path.move(to: .zero)
+        let dx = player.position.x - self.position.x
+        let dy = player.position.y - self.position.y
+        path.addLine(to: CGPoint(x: dx, y: dy))
+        
+        beam.path = path
+        beam.strokeColor = .magenta
+        beam.lineWidth = 4
+        beam.glowWidth = 10
+        beam.zPosition = 4
+        
+        self.addChild(beam)
+        
+        // Warning phase
+        beam.alpha = 0.2
+        let flash = SKAction.sequence([
+            SKAction.fadeAlpha(to: 0.8, duration: 0.1),
+            SKAction.fadeAlpha(to: 0.2, duration: 0.1)
+        ])
+        
+        beam.run(SKAction.sequence([
+            SKAction.repeat(flash, count: 5),
+            SKAction.run {
+                beam.alpha = 1.0
+                beam.lineWidth = 15
+                // Check collision at instant of firing
+                let dist = sqrt(dx*dx + dy*dy)
+                if dist < 1000 {
+                    player.takeDamage(30)
+                }
+            },
+            SKAction.wait(forDuration: 0.5),
+            SKAction.fadeOut(withDuration: 0.2),
+            SKAction.removeFromParent()
+        ]))
+    }
+    
+    func takeDamage(amount: Int) {
+        var actualDamage = amount
+        if type == .boss {
+            vulnerableSpot?.run(SKAction.sequence([
+                SKAction.colorize(with: .white, colorBlendFactor: 1.0, duration: 0.1),
+                SKAction.colorize(with: .cyan, colorBlendFactor: 0.0, duration: 0.1)
+            ]))
+        }
+        
+        health -= actualDamage
+        if health <= 0 {
+            let explosion = SKAction.sequence([
+                SKAction.group([
+                    SKAction.scale(to: 1.5, duration: 0.1),
+                    SKAction.fadeOut(withDuration: 0.1)
+                ]),
+                SKAction.removeFromParent()
+            ])
+            self.run(explosion)
+        } else {
+            let flash = SKAction.sequence([
+                SKAction.colorize(with: .white, colorBlendFactor: 0.8, duration: 0.05),
+                SKAction.colorize(with: .white, colorBlendFactor: 0.0, duration: 0.05)
+            ])
+            self.run(flash)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Moving Platform
+// -----------------------------------------------------------------------------
+
+class MovingPlatform: SKSpriteNode {
+    init(size: CGSize, range: CGFloat, horizontal: Bool) {
+        let texture = SKTexture(imageNamed: "TilePlatform")
+        super.init(texture: texture, color: .white, size: size)
+        
+        self.name = "moving_platform"
+        self.physicsBody = SKPhysicsBody(rectangleOf: size)
+        self.physicsBody?.isDynamic = false
+        self.physicsBody?.categoryBitMask = PhysicsCategory.movingPlatform
+        
+        let moveAction = horizontal ? 
+            SKAction.moveBy(x: range, y: 0, duration: 2.0) : 
+            SKAction.moveBy(x: 0, y: range, duration: 2.0)
+        
+        let sequence = SKAction.sequence([
+            moveAction,
+            moveAction.reversed()
+        ])
+        self.run(SKAction.repeatForever(sequence))
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Trap
+// -----------------------------------------------------------------------------
+
+class Trap: SKSpriteNode {
+    init() {
+        let texture = SKTexture(imageNamed: "TileGround")
+        super.init(texture: texture, color: .red, size: CGSize(width: 40, height: 20))
+        
+        self.name = "trap"
+        self.colorBlendFactor = 1.0
+        self.color = .red
+        
+        self.physicsBody = SKPhysicsBody(rectangleOf: self.size)
+        self.physicsBody?.isDynamic = false
+        self.physicsBody?.categoryBitMask = PhysicsCategory.trap
+        self.physicsBody?.contactTestBitMask = PhysicsCategory.player
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Hydra Boss
+// -----------------------------------------------------------------------------
+
+enum HydraState {
+    case shooting
+    case charging
+    case summoning
+    case resting
+}
+
+class HydraBoss: SKNode {
+    var body: Enemy!
+    var heads: [Enemy] = []
+    var state: HydraState = .shooting
+    var stateTimer: TimeInterval = 0
+    var nextStateTime: TimeInterval = 5.0
+    
+    init(position: CGPoint) {
+        super.init()
+        self.position = position
+        self.name = "hydra_boss"
+        
+        body = Enemy(type: .hydraHead)
+        body.texture = SKTexture(imageNamed: "HydraBody")
+        body.size = CGSize(width: 200, height: 150)
+        body.bossName = "PROJECT HYDRA: CORE"
+        body.health = 600
+        body.maxHealth = 600
+        body.position = .zero
+        self.addChild(body)
+        
+        for i in 0..<3 {
+            let head = Enemy(type: .hydraHead)
+            head.health = 150
+            head.maxHealth = 150
+            head.position = CGPoint(x: -80 + CGFloat(i * 80), y: 80)
+            heads.append(head)
+            self.addChild(head)
+        }
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func update(player: Player, currentTime: TimeInterval, dt: TimeInterval) {
+        if body.health <= 0 { return }
+        stateTimer += dt
+        
+        if stateTimer >= nextStateTime {
+            stateTimer = 0
+            switchState()
+        }
+        
+        switch state {
+        case .shooting:
+            for head in heads where head.health > 0 {
+                if Int.random(in: 0...60) < 1 {
+                    head.shoot(target: player.position)
+                }
+                let offset = sin(currentTime * 2 + CGFloat(heads.firstIndex(of: head)!)) * 20
+                head.position.y = 80 + offset
+            }
+        case .charging:
+            let dx = player.position.x - self.position.x
+            let speed: CGFloat = 350
+            self.body.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
+            for head in heads { head.position.y = 40 }
+        case .summoning:
+            if Int.random(in: 0...80) < 2 {
+                let spawn = Enemy(type: .hydraSpawn)
+                spawn.position = self.position
+                self.scene?.addChild(spawn)
+            }
+        case .resting:
+            self.body.physicsBody?.velocity = .zero
+            let targetY: CGFloat = -100
+            self.position.y += (targetY - self.position.y) * 0.05
+            for head in heads { head.position.y = 20 }
+        }
+    }
+    
+    func switchState() {
+        let states: [HydraState] = [.shooting, .charging, .summoning, .resting]
+        state = states.randomElement()!
+        switch state {
+        case .shooting: nextStateTime = 5.0
+        case .charging: nextStateTime = 3.0
+        case .summoning: nextStateTime = 4.0
+        case .resting: nextStateTime = 6.0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - Level Manager
+// -----------------------------------------------------------------------------
+
+class LevelManager {
+    
+    weak var scene: SKScene?
+    var currentLevel = 1
+    var portalSpawned = false
+    
+    init(scene: SKScene) {
+        self.scene = scene
+    }
+    
+    func loadLevel(_ level: Int) {
+        guard let scene = scene else { return }
+        portalSpawned = false
+        
+        scene.children.filter { 
+            $0.name == "enemy" || $0.name == "platform" || $0.name == "ground" || 
+            $0.name == "bullet" || $0.name == "wall" || $0.name == "hydra_boss" ||
+            $0.name == "moving_platform" || $0.name == "trap" || $0.name == "portal"
+        }.forEach { $0.removeFromParent() }
+        
+        self.currentLevel = level
+        
+        let ground = SKSpriteNode(imageNamed: "TileGround")
+        ground.size = CGSize(width: 2500, height: 120)
+        ground.position = CGPoint(x: 400, y: -250)
+        ground.physicsBody = SKPhysicsBody(rectangleOf: ground.size)
+        ground.physicsBody?.isDynamic = false
+        ground.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        ground.name = "ground"
+        scene.addChild(ground)
+        
+        if level == 5 {
+            spawnMiniboss()
+        } else if level == 10 {
+            spawnBoss()
+        } else if level == 15 {
+            spawnHydra()
+        } else {
+            spawnStandardLevel(difficulty: level)
+        }
+    }
+    
+    func spawnStandardLevel(difficulty: Int) {
+        guard let scene = scene else { return }
+        
+        var lastX: CGFloat = 800
+        var lastY: CGFloat = -150
+        
+        let clusterCount = 5 + (difficulty / 2)
+        for i in 0..<clusterCount {
+            let clusterBaseX = lastX + CGFloat.random(in: 250...400)
+            let clusterBaseY = max(-250, min(300, lastY + CGFloat.random(in: -100...100)))
+            
+            let platformsInCluster = 2 + Int.random(in: 0...2)
+            for j in 0..<platformsInCluster {
+                let x = clusterBaseX + CGFloat(j * 220)
+                let y = clusterBaseY + CGFloat.random(in: -30...30)
+                
+                if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 7 {
+                    let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 200, horizontal: Bool.random())
+                    mp.position = CGPoint(x: x, y: y)
+                    scene.addChild(mp)
+                } else {
+                    let width = CGFloat.random(in: 180...300)
+                    let platform = SKSpriteNode(imageNamed: "TilePlatform")
+                    platform.size = CGSize(width: width, height: 40)
+                    platform.position = CGPoint(x: x, y: y)
+                    platform.physicsBody = SKPhysicsBody(rectangleOf: platform.size)
+                    platform.physicsBody?.isDynamic = false
+                    platform.physicsBody?.categoryBitMask = PhysicsCategory.ground
+                    platform.name = "platform"
+                    scene.addChild(platform)
+                    
+                    if difficulty >= 4 && Int.random(in: 0...10) > 7 {
+                        let trap = Trap()
+                        trap.position = CGPoint(x: x, y: y + 30)
+                        scene.addChild(trap)
+                    }
+                }
+                
+                if Bool.random() {
+                    let enemyType: EnemyType = (difficulty > 3 && Int.random(in: 0...10) > 6) ? .flyer : .walker
+                    let enemy = Enemy(type: enemyType)
+                    enemy.position = CGPoint(x: x, y: y + 80)
+                    scene.addChild(enemy)
+                }
+                
+                lastX = x
+                lastY = y
+            }
+        }
+        
+        let endX = lastX + 600
+        let endPlatform = SKSpriteNode(imageNamed: "TileGround")
+        endPlatform.size = CGSize(width: 800, height: 80)
+        endPlatform.position = CGPoint(x: endX, y: -100)
+        endPlatform.physicsBody = SKPhysicsBody(rectangleOf: endPlatform.size)
+        endPlatform.physicsBody?.isDynamic = false
+        endPlatform.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        endPlatform.name = "platform"
+        scene.addChild(endPlatform)
+    }
+    
+    func spawnMiniboss() {
+        guard let scene = scene else { return }
+        let boss = Enemy(type: .miniboss)
+        boss.position = CGPoint(x: 1000, y: 0)
+        scene.addChild(boss)
+        
+        let arena = SKSpriteNode(imageNamed: "TileGround")
+        arena.size = CGSize(width: 2500, height: 60)
+        arena.position = CGPoint(x: 1000, y: -150)
+        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false
+        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"
+        scene.addChild(arena)
+    }
+    
+    func spawnBoss() {
+        guard let scene = scene else { return }
+        let boss = Enemy(type: .boss)
+        boss.position = CGPoint(x: 1200, y: 100)
+        scene.addChild(boss)
+        
+        let arena = SKSpriteNode(imageNamed: "TileGround")
+        arena.size = CGSize(width: 3000, height: 80)
+        arena.position = CGPoint(x: 1200, y: -150)
+        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false
+        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"
+        scene.addChild(arena)
+    }
+    
+    func spawnHydra() {
+        guard let scene = scene else { return }
+        let hydra = HydraBoss(position: CGPoint(x: 1500, y: 100))
+        scene.addChild(hydra)
+        
+        let arena = SKSpriteNode(imageNamed: "TileGround")
+        arena.size = CGSize(width: 4000, height: 80)
+        arena.position = CGPoint(x: 1500, y: -200)
+        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false
+        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"
+        scene.addChild(arena)
+    }
+    
+    func spawnPortal() {
+        guard let scene = scene, !portalSpawned else { return }
+        portalSpawned = true
+        
+        let portal = SKShapeNode(circleOfRadius: 50)
+        portal.fillColor = .purple
+        portal.strokeColor = .magenta
+        portal.glowWidth = 10
+        portal.name = "portal"
+        portal.zPosition = 5
+        
+        // Find a suitable end position (last platform area)
+        let endNodes = scene.children.filter { $0.name == "platform" }
+        if let lastPlatform = endNodes.sorted(by: { $0.position.x < $1.position.x }).last {
+            portal.position = CGPoint(x: lastPlatform.position.x, y: lastPlatform.position.y + 100)
+        } else {
+            portal.position = CGPoint(x: 1000, y: 100)
+        }
+        
+        portal.physicsBody = SKPhysicsBody(circleOfRadius: 50)
+        portal.physicsBody?.isDynamic = false
+        portal.physicsBody?.categoryBitMask = PhysicsCategory.portal
+        portal.physicsBody?.contactTestBitMask = PhysicsCategory.player
+        
+        scene.addChild(portal)
+        
+        let rotate = SKAction.rotate(byAngle: .pi * 2, duration: 2.0)
+        portal.run(SKAction.repeatForever(rotate))
+        
+        let label = SKLabelNode(fontNamed: "Courier-Bold")
+        label.text = "LEVEL CLEARED - ENTER PORTAL"
+        label.fontSize = 20
+        label.position = CGPoint(x: 0, y: 70)
+        portal.addChild(label)
+    }
+    
+    func checkLevelCompletion() {
+        guard let scene = scene else { return }
+        let enemies = scene.children.filter { $0.name == "enemy" || $0.name == "hydra_boss" }
+        
+        var cleared = enemies.isEmpty
+        if let hydra = scene.childNode(withName: "hydra_boss") as? HydraBoss {
+            cleared = hydra.body.health <= 0
+        }
+        
+        if cleared && !portalSpawned {
+            spawnPortal()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - GameScene
+// -----------------------------------------------------------------------------
+
+class GameScene: SKScene, SKPhysicsContactDelegate {
+    
+    var player: Player!
+    var levelManager: LevelManager!
+    var cam: SKCameraNode!
+    
+    var lastUpdateTime: TimeInterval = 0
+    
+    var leftPressed = false
+    var rightPressed = false
+    var jumpPressed = false
     
     override func didMove(to view: SKView) {
+        self.removeAllChildren()
         
-        // Get label node from scene and store it for use later
-        self.label = self.childNode(withName: "//helloLabel") as? SKLabelNode
-        if let label = self.label {
-            label.alpha = 0.0
-            label.run(SKAction.fadeIn(withDuration: 2.0))
+        physicsWorld.gravity = CGVector(dx: 0, dy: -25.0)
+        physicsWorld.contactDelegate = self
+        
+        cam = SKCameraNode()
+        self.camera = cam
+        self.addChild(cam)
+        
+        player = Player()
+        player.position = CGPoint(x: -200, y: 0)
+        self.addChild(player)
+        
+        levelManager = LevelManager(scene: self)
+        levelManager.loadLevel(1)
+        
+        setupHUD()
+    }
+    
+    func setupHUD() {
+        let label = SKLabelNode(fontNamed: "Courier-Bold")
+        label.text = "LEVEL 1"
+        label.name = "levelLabel"
+        label.position = CGPoint(x: 0, y: 340)
+        label.fontSize = 32
+        label.fontColor = .white
+        label.zPosition = 100
+        cam.addChild(label)
+        
+        let healthLabel = SKLabelNode(fontNamed: "Courier-Bold")
+        healthLabel.text = "HEALTH: 100%"
+        healthLabel.name = "healthLabel"
+        healthLabel.position = CGPoint(x: -350, y: 340)
+        healthLabel.fontSize = 20
+        healthLabel.fontColor = .green
+        healthLabel.zPosition = 100
+        cam.addChild(healthLabel)
+        
+        let bossBarBg = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
+        bossBarBg.name = "bossBarBg"
+        bossBarBg.fillColor = .darkGray
+        bossBarBg.strokeColor = .white
+        bossBarBg.position = CGPoint(x: 0, y: 300)
+        bossBarBg.isHidden = true
+        bossBarBg.zPosition = 100
+        cam.addChild(bossBarBg)
+        
+        let bossBarFill = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
+        bossBarFill.name = "bossBarFill"
+        bossBarFill.fillColor = .red
+        bossBarFill.strokeColor = .clear
+        bossBarFill.position = CGPoint(x: 0, y: 300)
+        bossBarFill.isHidden = true
+        bossBarFill.zPosition = 101
+        cam.addChild(bossBarFill)
+        
+        let bossNameLabel = SKLabelNode(fontNamed: "Courier-Bold")
+        bossNameLabel.name = "bossNameLabel"
+        bossNameLabel.position = CGPoint(x: 0, y: 260)
+        bossNameLabel.fontSize = 22
+        bossNameLabel.fontColor = .white
+        bossNameLabel.isHidden = true
+        bossNameLabel.zPosition = 100
+        cam.addChild(bossNameLabel)
+    }
+    
+    override func update(_ currentTime: TimeInterval) {
+        if lastUpdateTime == 0 { lastUpdateTime = currentTime }
+        let dt = currentTime - lastUpdateTime
+        lastUpdateTime = currentTime
+        
+        if let hLabel = cam.childNode(withName: "healthLabel") as? SKLabelNode {
+            hLabel.text = "HEALTH: \(player.health)%"
+            hLabel.fontColor = player.health < 30 ? .red : (player.health < 60 ? .yellow : .green)
         }
         
-        // Create shape node to use during mouse interaction
-        let w = (self.size.width + self.size.height) * 0.05
-        self.spinnyNode = SKShapeNode.init(rectOf: CGSize.init(width: w, height: w), cornerRadius: w * 0.3)
+        updateBossBar()
         
-        if let spinnyNode = self.spinnyNode {
-            spinnyNode.lineWidth = 2.5
+        if player.health <= 0 {
+            gameOver()
+            return
+        }
+        
+        var dx: CGFloat = 0
+        if leftPressed { dx -= 1 }
+        if rightPressed { dx += 1 }
+        player.move(direction: dx)
+        
+        if jumpPressed {
+            player.jump()
+        }
+        
+        let lerp: CGFloat = 0.1
+        let targetX = player.position.x
+        let targetY = max(player.position.y + 100, 0)
+        cam.position.x += (targetX - cam.position.x) * lerp
+        cam.position.y += (targetY - cam.position.y) * lerp
+        
+        self.children.filter { $0 is Enemy }.forEach {
+            ($0 as? Enemy)?.update(player: player, scene: self)
+        }
+        
+        if let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss {
+            hydra.update(player: player, currentTime: currentTime, dt: dt)
+        }
+        
+        levelManager.checkLevelCompletion()
+        
+        if player.position.y < -1200 {
+            player.takeDamage(100)
+        }
+    }
+    
+    func updateBossBar() {
+        let boss = self.children.compactMap { $0 as? Enemy }.first { $0.bossName != nil }
+        let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss
+        
+        let activeBoss = boss ?? hydra?.body
+        
+        if let b = activeBoss {
+            cam.childNode(withName: "bossBarBg")?.isHidden = false
+            cam.childNode(withName: "bossBarFill")?.isHidden = false
+            cam.childNode(withName: "bossNameLabel")?.isHidden = false
             
-            spinnyNode.run(SKAction.repeatForever(SKAction.rotate(byAngle: CGFloat(Double.pi), duration: 1)))
-            spinnyNode.run(SKAction.sequence([SKAction.wait(forDuration: 0.5),
-                                              SKAction.fadeOut(withDuration: 0.5),
-                                              SKAction.removeFromParent()]))
+            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode {
+                let pct = CGFloat(b.health) / CGFloat(b.maxHealth)
+                fill.xScale = max(0, pct)
+            }
+            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode {
+                nameLabel.text = b.bossName ?? "BOSS"
+            }
+        } else {
+            cam.childNode(withName: "bossBarBg")?.isHidden = true
+            cam.childNode(withName: "bossBarFill")?.isHidden = true
+            cam.childNode(withName: "bossNameLabel")?.isHidden = true
         }
     }
     
+    func gameOver() {
+        player.health = 100
+        player.reset()
+        levelManager.loadLevel(levelManager.currentLevel)
+        player.position = CGPoint(x: -200, y: 0)
+        player.physicsBody?.velocity = .zero
+        
+        let overlay = SKLabelNode(fontNamed: "Courier-Bold")
+        overlay.text = "SYSTEM FAILURE - REBOOTING..."
+        overlay.fontSize = 40
+        overlay.fontColor = .red
+        overlay.position = CGPoint(x: 0, y: 0)
+        cam.addChild(overlay)
+        overlay.run(SKAction.sequence([
+            SKAction.wait(forDuration: 1.5),
+            SKAction.removeFromParent()
+        ]))
+    }
     
-    func touchDown(atPoint pos : CGPoint) {
-        if let n = self.spinnyNode?.copy() as! SKShapeNode? {
-            n.position = pos
-            n.strokeColor = SKColor.green
-            self.addChild(n)
+    func startNextLevel() {
+        let nextLevel = levelManager.currentLevel + 1
+        levelManager.loadLevel(nextLevel)
+        if let label = cam.childNode(withName: "levelLabel") as? SKLabelNode {
+            label.text = "LEVEL \(nextLevel)"
+            if nextLevel == 5 { label.text = "MINIBOSS: TANK" }
+            if nextLevel == 10 { label.text = "BOSS: GATEKEEPER" }
+            if nextLevel == 15 { label.text = "THE HYDRA" }
         }
-    }
-    
-    func touchMoved(toPoint pos : CGPoint) {
-        if let n = self.spinnyNode?.copy() as! SKShapeNode? {
-            n.position = pos
-            n.strokeColor = SKColor.blue
-            self.addChild(n)
-        }
-    }
-    
-    func touchUp(atPoint pos : CGPoint) {
-        if let n = self.spinnyNode?.copy() as! SKShapeNode? {
-            n.position = pos
-            n.strokeColor = SKColor.red
-            self.addChild(n)
-        }
-    }
-    
-    override func mouseDown(with event: NSEvent) {
-        self.touchDown(atPoint: event.location(in: self))
-    }
-    
-    override func mouseDragged(with event: NSEvent) {
-        self.touchMoved(toPoint: event.location(in: self))
-    }
-    
-    override func mouseUp(with event: NSEvent) {
-        self.touchUp(atPoint: event.location(in: self))
+        player.position = CGPoint(x: -200, y: 0)
+        player.physicsBody?.velocity = .zero
+        player.health = min(player.health + 30, 100)
     }
     
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 0x31:
-            if let label = self.label {
-                label.run(SKAction.init(named: "Pulse")!, withKey: "fadeInOut")
-            }
-        default:
-            print("keyDown: \(event.characters!) keyCode: \(event.keyCode)")
+        case 0: leftPressed = true
+        case 2: rightPressed = true
+        case 49: jumpPressed = true
+        case 13: player.shoot(scene: self)
+        default: break
         }
     }
     
+    override func keyUp(with event: NSEvent) {
+        switch event.keyCode {
+        case 0: leftPressed = false
+        case 2: rightPressed = false
+        case 49: jumpPressed = false
+        default: break
+        }
+    }
     
-    override func update(_ currentTime: TimeInterval) {
-        // Called before each frame is rendered
+    override func mouseDown(with event: NSEvent) {
+        player.shoot(scene: self)
+    }
+    
+    func didBegin(_ contact: SKPhysicsContact) {
+        let maskA = contact.bodyA.categoryBitMask
+        let maskB = contact.bodyB.categoryBitMask
+        
+        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
+           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
+            player.isGrounded = true
+        }
+        
+        if (maskA == PhysicsCategory.player && maskB == PhysicsCategory.portal) ||
+           (maskB == PhysicsCategory.player && maskA == PhysicsCategory.portal) {
+            startNextLevel()
+        }
+        
+        if (maskA == PhysicsCategory.playerProjectile && (maskB == PhysicsCategory.enemy || maskB == PhysicsCategory.boss)) ||
+           (maskB == PhysicsCategory.playerProjectile && (maskA == PhysicsCategory.enemy || maskA == PhysicsCategory.boss)) {
+            let projectile = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyA.node : contact.bodyB.node
+            let enemy = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyB.node : contact.bodyA.node
+            projectile?.removeFromParent()
+            (enemy as? Enemy)?.takeDamage(amount: 1)
+        }
+        
+        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.enemy || maskB == PhysicsCategory.enemyProjectile || maskB == PhysicsCategory.boss || maskB == PhysicsCategory.trap)) ||
+           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.enemy || maskA == PhysicsCategory.enemyProjectile || maskA == PhysicsCategory.boss || maskA == PhysicsCategory.trap)) {
+            let other = (maskA == PhysicsCategory.player) ? contact.bodyB.node : contact.bodyA.node
+            var damage = 10
+            if other?.physicsBody?.categoryBitMask == PhysicsCategory.trap { damage = 25 }
+            else if let enemy = other as? Enemy {
+                if enemy.type == .boss || enemy.type == .miniboss { damage = 25 }
+            } else if other?.physicsBody?.categoryBitMask == PhysicsCategory.enemyProjectile {
+                damage = 15
+                other?.removeFromParent()
+            }
+            player.takeDamage(damage)
+        }
+    }
+    
+    func didEnd(_ contact: SKPhysicsContact) {
+        let maskA = contact.bodyA.categoryBitMask
+        let maskB = contact.bodyB.categoryBitMask
+        
+        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
+           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
+            player.isGrounded = false
+        }
     }
 }
