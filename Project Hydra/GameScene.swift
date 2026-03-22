@@ -256,6 +256,12 @@ class Enemy: SKSpriteNode {
     func update(player: Player, scene: SKScene) {
         if health <= 0 { return }
         
+        // Fall Check
+        if self.position.y < -1200 {
+            self.takeDamage(amount: 1000)
+            return
+        }
+        
         let dx = player.position.x - self.position.x
         let dy = player.position.y - self.position.y
         let dist = sqrt(dx*dx + dy*dy)
@@ -266,7 +272,7 @@ class Enemy: SKSpriteNode {
             let probeX = self.position.x + (moveDir * 30)
             let probeY = self.position.y - 30
             
-            let groundNodes = scene.nodes(at: CGPoint(x: probeX, y: probeY)).filter { $0.name == "platform" || $0.name == "ground" }
+            let groundNodes = scene.nodes(at: CGPoint(x: probeX, y: probeY)).filter { $0.name == "platform" || $0.name == "ground" || $0.name == "moving_platform" }
             if groundNodes.isEmpty {
                 moveDir *= -1
             }
@@ -404,7 +410,6 @@ class Enemy: SKSpriteNode {
             SKAction.run {
                 beam.alpha = 1.0
                 beam.lineWidth = 15
-                // Check collision at instant of firing
                 let dist = sqrt(dx*dx + dy*dy)
                 if dist < 1000 {
                     player.takeDamage(30)
@@ -417,15 +422,7 @@ class Enemy: SKSpriteNode {
     }
     
     func takeDamage(amount: Int) {
-        var actualDamage = amount
-        if type == .boss {
-            vulnerableSpot?.run(SKAction.sequence([
-                SKAction.colorize(with: .white, colorBlendFactor: 1.0, duration: 0.1),
-                SKAction.colorize(with: .cyan, colorBlendFactor: 0.0, duration: 0.1)
-            ]))
-        }
-        
-        health -= actualDamage
+        health -= amount
         if health <= 0 {
             let explosion = SKAction.sequence([
                 SKAction.group([
@@ -547,6 +544,13 @@ class HydraBoss: SKNode {
     
     func update(player: Player, currentTime: TimeInterval, dt: TimeInterval) {
         if body.health <= 0 { return }
+        
+        // Fall Check for Boss
+        if self.position.y < -1200 {
+            body.health = 0
+            return
+        }
+        
         stateTimer += dt
         
         if stateTimer >= nextStateTime {
@@ -656,8 +660,8 @@ class LevelManager {
                 let x = clusterBaseX + CGFloat(j * 220)
                 let y = clusterBaseY + CGFloat.random(in: -30...30)
                 
-                if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 7 {
-                    let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 200, horizontal: Bool.random())
+                if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 6 {
+                    let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 250, horizontal: Bool.random())
                     mp.position = CGPoint(x: x, y: y)
                     scene.addChild(mp)
                 } else {
@@ -678,7 +682,8 @@ class LevelManager {
                     }
                 }
                 
-                if Bool.random() {
+                // FORCE at least one enemy if level 3 to ensure completion check works
+                if Bool.random() || (i == 0 && j == 0) {
                     let enemyType: EnemyType = (difficulty > 3 && Int.random(in: 0...10) > 6) ? .flyer : .walker
                     let enemy = Enemy(type: enemyType)
                     enemy.position = CGPoint(x: x, y: y + 80)
@@ -759,10 +764,9 @@ class LevelManager {
         portal.name = "portal"
         portal.zPosition = 5
         
-        // Find a suitable end position (last platform area)
-        let endNodes = scene.children.filter { $0.name == "platform" }
-        if let lastPlatform = endNodes.sorted(by: { $0.position.x < $1.position.x }).last {
-            portal.position = CGPoint(x: lastPlatform.position.x, y: lastPlatform.position.y + 100)
+        let endNodes = scene.children.filter { $0.name == "platform" || $0.name == "ground" }
+        if let lastNode = endNodes.sorted(by: { $0.position.x < $1.position.x }).last {
+            portal.position = CGPoint(x: lastNode.position.x, y: lastNode.position.y + 120)
         } else {
             portal.position = CGPoint(x: 1000, y: 100)
         }
@@ -778,24 +782,26 @@ class LevelManager {
         portal.run(SKAction.repeatForever(rotate))
         
         let label = SKLabelNode(fontNamed: "Courier-Bold")
-        label.text = "LEVEL CLEARED - ENTER PORTAL"
+        label.text = "PORTAL OPEN"
         label.fontSize = 20
         label.position = CGPoint(x: 0, y: 70)
         portal.addChild(label)
     }
     
-    func checkLevelCompletion() {
-        guard let scene = scene else { return }
-        let enemies = scene.children.filter { $0.name == "enemy" || $0.name == "hydra_boss" }
+    func checkLevelCompletion() -> Int {
+        guard let scene = scene else { return 0 }
+        let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") && ($0 as? Enemy)?.health ?? 1 > 0 }
         
-        var cleared = enemies.isEmpty
+        var bossHealth = 0
         if let hydra = scene.childNode(withName: "hydra_boss") as? HydraBoss {
-            cleared = hydra.body.health <= 0
+            bossHealth = hydra.body.health
         }
         
-        if cleared && !portalSpawned {
+        let count = enemies.count
+        if count == 0 && bossHealth <= 0 && !portalSpawned {
             spawnPortal()
         }
+        return count
     }
 }
 
@@ -854,6 +860,15 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         healthLabel.zPosition = 100
         cam.addChild(healthLabel)
         
+        let enemyLabel = SKLabelNode(fontNamed: "Courier-Bold")
+        enemyLabel.text = "ENEMIES: 0"
+        enemyLabel.name = "enemyLabel"
+        enemyLabel.position = CGPoint(x: 350, y: 340)
+        enemyLabel.fontSize = 20
+        enemyLabel.fontColor = .orange
+        enemyLabel.zPosition = 100
+        cam.addChild(enemyLabel)
+        
         let bossBarBg = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
         bossBarBg.name = "bossBarBg"
         bossBarBg.fillColor = .darkGray
@@ -892,6 +907,13 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
             hLabel.fontColor = player.health < 30 ? .red : (player.health < 60 ? .yellow : .green)
         }
         
+        let enemiesCount = levelManager.checkLevelCompletion()
+        if let eLabel = cam.childNode(withName: "enemyLabel") as? SKLabelNode {
+            eLabel.text = "ENEMIES: \(enemiesCount)"
+            if enemiesCount == 0 { eLabel.fontColor = .cyan; eLabel.text = "FIND PORTAL" }
+            else { eLabel.fontColor = .orange }
+        }
+        
         updateBossBar()
         
         if player.health <= 0 {
@@ -921,8 +943,6 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss {
             hydra.update(player: player, currentTime: currentTime, dt: dt)
         }
-        
-        levelManager.checkLevelCompletion()
         
         if player.position.y < -1200 {
             player.takeDamage(100)
