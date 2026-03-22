@@ -30,6 +30,7 @@ class Player: SKSpriteNode {
     var health = 100
     var maxHealth = 100
     var isInvulnerable = false
+    var currentPlatform: SKNode?
     
     init() {
         let texture = SKTexture(imageNamed: "PlayerIdle")
@@ -53,9 +54,10 @@ class Player: SKSpriteNode {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func move(direction: CGFloat) {
+    func move(direction: CGFloat, platformVelocity: CGFloat = 0) {
         let speed: CGFloat = 400
-        self.physicsBody?.velocity.dx = direction * speed
+        // Add platform velocity so we stay on it
+        self.physicsBody?.velocity.dx = (direction * speed) + platformVelocity
         
         if direction > 0 && !facingRight {
             self.xScale = 1
@@ -83,6 +85,7 @@ class Player: SKSpriteNode {
             self.physicsBody?.velocity.dy = 0 
             self.physicsBody?.applyImpulse(CGVector(dx: 0, dy: 65))
             isGrounded = false
+            currentPlatform = nil
         }
     }
     
@@ -119,7 +122,6 @@ class Player: SKSpriteNode {
         
         hit()
         
-        // Brief invulnerability
         isInvulnerable = true
         self.run(SKAction.sequence([
             SKAction.wait(forDuration: 1.0),
@@ -163,7 +165,6 @@ class Enemy: SKSpriteNode {
     var maxHealth: Int
     var bossName: String?
     private var moveDir: CGFloat = -1
-    private var attackCooldown: TimeInterval = 0
     private var vulnerableSpot: SKShapeNode?
     
     init(type: EnemyType) {
@@ -398,7 +399,6 @@ class Enemy: SKSpriteNode {
         
         self.addChild(beam)
         
-        // Warning phase
         beam.alpha = 0.2
         let flash = SKAction.sequence([
             SKAction.fadeAlpha(to: 0.8, duration: 0.1),
@@ -447,6 +447,9 @@ class Enemy: SKSpriteNode {
 // -----------------------------------------------------------------------------
 
 class MovingPlatform: SKSpriteNode {
+    var velocity: CGVector = .zero
+    private var lastPosition: CGPoint = .zero
+    
     init(size: CGSize, range: CGFloat, horizontal: Bool) {
         let texture = SKTexture(imageNamed: "TilePlatform")
         super.init(texture: texture, color: .white, size: size)
@@ -465,10 +468,19 @@ class MovingPlatform: SKSpriteNode {
             moveAction.reversed()
         ])
         self.run(SKAction.repeatForever(sequence))
+        self.lastPosition = self.position
     }
     
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    func update(dt: TimeInterval) {
+        if dt > 0 {
+            velocity = CGVector(dx: (self.position.x - lastPosition.x) / CGFloat(dt),
+                                dy: (self.position.y - lastPosition.y) / CGFloat(dt))
+            lastPosition = self.position
+        }
     }
 }
 
@@ -545,7 +557,6 @@ class HydraBoss: SKNode {
     func update(player: Player, currentTime: TimeInterval, dt: TimeInterval) {
         if body.health <= 0 { return }
         
-        // Fall Check for Boss
         if self.position.y < -1200 {
             body.health = 0
             return
@@ -682,7 +693,6 @@ class LevelManager {
                     }
                 }
                 
-                // FORCE at least one enemy if level 3 to ensure completion check works
                 if Bool.random() || (i == 0 && j == 0) {
                     let enemyType: EnemyType = (difficulty > 3 && Int.random(in: 0...10) > 6) ? .flyer : .walker
                     let enemy = Enemy(type: enemyType)
@@ -790,18 +800,23 @@ class LevelManager {
     
     func checkLevelCompletion() -> Int {
         guard let scene = scene else { return 0 }
-        let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") && ($0 as? Enemy)?.health ?? 1 > 0 }
         
-        var bossHealth = 0
-        if let hydra = scene.childNode(withName: "hydra_boss") as? HydraBoss {
-            bossHealth = hydra.body.health
+        // Robust check: all enemies and boss components
+        let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") }
+        
+        var totalHealth = 0
+        for node in enemies {
+            if let enemy = node as? Enemy {
+                if enemy.health > 0 { totalHealth += 1 }
+            } else if let hydra = node as? HydraBoss {
+                if hydra.body.health > 0 { totalHealth += 1 }
+            }
         }
         
-        let count = enemies.count
-        if count == 0 && bossHealth <= 0 && !portalSpawned {
+        if totalHealth == 0 && !portalSpawned {
             spawnPortal()
         }
-        return count
+        return totalHealth
     }
 }
 
@@ -921,10 +936,21 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
             return
         }
         
+        // Update all moving platforms
+        self.children.filter { $0.name == "moving_platform" }.forEach {
+            ($0 as? MovingPlatform)?.update(dt: dt)
+        }
+        
+        // Player Movement with Platform inheritance
         var dx: CGFloat = 0
         if leftPressed { dx -= 1 }
         if rightPressed { dx += 1 }
-        player.move(direction: dx)
+        
+        var platformVel: CGFloat = 0
+        if let mp = player.currentPlatform as? MovingPlatform {
+            platformVel = mp.velocity.dx
+        }
+        player.move(direction: dx, platformVelocity: platformVel)
         
         if jumpPressed {
             player.jump()
@@ -1037,6 +1063,8 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
            (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
             player.isGrounded = true
+            if maskB == PhysicsCategory.movingPlatform { player.currentPlatform = contact.bodyB.node }
+            if maskA == PhysicsCategory.movingPlatform { player.currentPlatform = contact.bodyA.node }
         }
         
         if (maskA == PhysicsCategory.player && maskB == PhysicsCategory.portal) ||
@@ -1074,6 +1102,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
            (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
             player.isGrounded = false
+            player.currentPlatform = nil
         }
     }
 }
