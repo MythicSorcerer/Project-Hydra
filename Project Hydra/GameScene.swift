@@ -30,7 +30,6 @@ class Player: SKSpriteNode {
     var health = 100
     var maxHealth = 100
     var isInvulnerable = false
-    var currentPlatform: SKNode?
     
     init() {
         let texture = SKTexture(imageNamed: "PlayerIdle")
@@ -46,7 +45,7 @@ class Player: SKSpriteNode {
         self.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall | PhysicsCategory.movingPlatform
         self.physicsBody?.allowsRotation = false
         self.physicsBody?.restitution = 0.0
-        self.physicsBody?.friction = 0.2
+        self.physicsBody?.friction = 1.0 // High friction for platforms
         self.physicsBody?.linearDamping = 0.1
     }
     
@@ -54,10 +53,10 @@ class Player: SKSpriteNode {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func move(direction: CGFloat, platformVelocity: CGFloat = 0) {
+    func move(direction: CGFloat) {
         let speed: CGFloat = 400
-        // Add platform velocity so we stay on it
-        self.physicsBody?.velocity.dx = (direction * speed) + platformVelocity
+        // Use velocity instead of position manipulation so friction works with platforms
+        self.physicsBody?.velocity.dx = direction * speed
         
         if direction > 0 && !facingRight {
             self.xScale = 1
@@ -85,7 +84,6 @@ class Player: SKSpriteNode {
             self.physicsBody?.velocity.dy = 0 
             self.physicsBody?.applyImpulse(CGVector(dx: 0, dy: 65))
             isGrounded = false
-            currentPlatform = nil
         }
     }
     
@@ -257,7 +255,6 @@ class Enemy: SKSpriteNode {
     func update(player: Player, scene: SKScene) {
         if health <= 0 { return }
         
-        // Fall Check
         if self.position.y < -1200 {
             self.takeDamage(amount: 1000)
             return
@@ -447,39 +444,53 @@ class Enemy: SKSpriteNode {
 // -----------------------------------------------------------------------------
 
 class MovingPlatform: SKSpriteNode {
-    var velocity: CGVector = .zero
-    private var lastPosition: CGPoint = .zero
+    private var range: CGFloat
+    private var horizontal: Bool
+    private var startPos: CGPoint
+    private var moveSpeed: CGFloat = 100
+    private var direction: CGFloat = 1
     
     init(size: CGSize, range: CGFloat, horizontal: Bool) {
+        self.range = range
+        self.horizontal = horizontal
+        self.startPos = .zero // Will be set after position is set
         let texture = SKTexture(imageNamed: "TilePlatform")
         super.init(texture: texture, color: .white, size: size)
         
         self.name = "moving_platform"
         self.physicsBody = SKPhysicsBody(rectangleOf: size)
-        self.physicsBody?.isDynamic = false
+        self.physicsBody?.isDynamic = true
+        self.physicsBody?.affectedByGravity = false
+        self.physicsBody?.allowsRotation = false
         self.physicsBody?.categoryBitMask = PhysicsCategory.movingPlatform
-        
-        let moveAction = horizontal ? 
-            SKAction.moveBy(x: range, y: 0, duration: 2.0) : 
-            SKAction.moveBy(x: 0, y: range, duration: 2.0)
-        
-        let sequence = SKAction.sequence([
-            moveAction,
-            moveAction.reversed()
-        ])
-        self.run(SKAction.repeatForever(sequence))
-        self.lastPosition = self.position
+        self.physicsBody?.collisionBitMask = PhysicsCategory.player
+        self.physicsBody?.friction = 1.0 // High friction so player sticks
+        self.physicsBody?.restitution = 0.0
     }
     
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
+    func setup() {
+        self.startPos = self.position
+    }
+    
     func update(dt: TimeInterval) {
-        if dt > 0 {
-            velocity = CGVector(dx: (self.position.x - lastPosition.x) / CGFloat(dt),
-                                dy: (self.position.y - lastPosition.y) / CGFloat(dt))
-            lastPosition = self.position
+        if horizontal {
+            let dist = self.position.x - startPos.x
+            if abs(dist) > range {
+                direction *= -1
+                self.position.x = startPos.x + (range * direction)
+            }
+            self.physicsBody?.velocity = CGVector(dx: direction * moveSpeed, dy: 0)
+        } else {
+            let dist = self.position.y - startPos.y
+            if abs(dist) > range {
+                direction *= -1
+                self.position.y = startPos.y + (range * direction)
+            }
+            self.physicsBody?.velocity = CGVector(dx: 0, dy: direction * moveSpeed)
         }
     }
 }
@@ -674,6 +685,7 @@ class LevelManager {
                 if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 6 {
                     let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 250, horizontal: Bool.random())
                     mp.position = CGPoint(x: x, y: y)
+                    mp.setup()
                     scene.addChild(mp)
                 } else {
                     let width = CGFloat.random(in: 180...300)
@@ -792,7 +804,13 @@ class LevelManager {
         portal.run(SKAction.repeatForever(rotate))
         
         let label = SKLabelNode(fontNamed: "Courier-Bold")
-        label.text = "PORTAL OPEN"
+        var labelText = "NEXT LEVEL"
+        if currentLevel == 4 { labelText = "NEXT: MINIBOSS" }
+        else if currentLevel == 9 { labelText = "NEXT: BOSS" }
+        else if currentLevel == 14 { labelText = "NEXT: FINAL BOSS" }
+        else if currentLevel >= 15 { labelText = "FINISH" }
+        
+        label.text = labelText
         label.fontSize = 20
         label.position = CGPoint(x: 0, y: 70)
         portal.addChild(label)
@@ -801,7 +819,6 @@ class LevelManager {
     func checkLevelCompletion() -> Int {
         guard let scene = scene else { return 0 }
         
-        // Robust check: all enemies and boss components
         let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") }
         
         var totalHealth = 0
@@ -936,21 +953,14 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
             return
         }
         
-        // Update all moving platforms
         self.children.filter { $0.name == "moving_platform" }.forEach {
             ($0 as? MovingPlatform)?.update(dt: dt)
         }
         
-        // Player Movement with Platform inheritance
         var dx: CGFloat = 0
         if leftPressed { dx -= 1 }
         if rightPressed { dx += 1 }
-        
-        var platformVel: CGFloat = 0
-        if let mp = player.currentPlatform as? MovingPlatform {
-            platformVel = mp.velocity.dx
-        }
-        player.move(direction: dx, platformVelocity: platformVel)
+        player.move(direction: dx)
         
         if jumpPressed {
             player.jump()
@@ -1019,7 +1029,36 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         ]))
     }
     
+    func showWinScreen() {
+        let overlay = SKShapeNode(rectOf: CGSize(width: 2000, height: 2000))
+        overlay.fillColor = .black
+        overlay.alpha = 0.0
+        overlay.zPosition = 200
+        cam.addChild(overlay)
+        
+        let winLabel = SKLabelNode(fontNamed: "Courier-Bold")
+        winLabel.text = "PROJECT HYDRA NEUTRALIZED"
+        winLabel.fontSize = 40
+        winLabel.fontColor = .green
+        winLabel.position = CGPoint(x: 0, y: 50)
+        overlay.addChild(winLabel)
+        
+        let subLabel = SKLabelNode(fontNamed: "Courier")
+        subLabel.text = "YOU WIN! SYSTEM RESTORED."
+        subLabel.fontSize = 20
+        subLabel.fontColor = .white
+        subLabel.position = CGPoint(x: 0, y: -20)
+        overlay.addChild(subLabel)
+        
+        overlay.run(SKAction.fadeAlpha(to: 0.9, duration: 2.0))
+    }
+    
     func startNextLevel() {
+        if levelManager.currentLevel >= 15 {
+            showWinScreen()
+            return
+        }
+        
         let nextLevel = levelManager.currentLevel + 1
         levelManager.loadLevel(nextLevel)
         if let label = cam.childNode(withName: "levelLabel") as? SKLabelNode {
@@ -1063,8 +1102,6 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
            (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
             player.isGrounded = true
-            if maskB == PhysicsCategory.movingPlatform { player.currentPlatform = contact.bodyB.node }
-            if maskA == PhysicsCategory.movingPlatform { player.currentPlatform = contact.bodyA.node }
         }
         
         if (maskA == PhysicsCategory.player && maskB == PhysicsCategory.portal) ||
@@ -1102,7 +1139,6 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
            (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
             player.isGrounded = false
-            player.currentPlatform = nil
         }
     }
 }
