@@ -45,7 +45,7 @@ class Player: SKSpriteNode {
         self.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall | PhysicsCategory.movingPlatform
         self.physicsBody?.allowsRotation = false
         self.physicsBody?.restitution = 0.0
-        self.physicsBody?.friction = 1.0 // High friction for platforms
+        self.physicsBody?.friction = 0.5
         self.physicsBody?.linearDamping = 0.1
     }
     
@@ -55,7 +55,6 @@ class Player: SKSpriteNode {
     
     func move(direction: CGFloat) {
         let speed: CGFloat = 400
-        // Use velocity instead of position manipulation so friction works with platforms
         self.physicsBody?.velocity.dx = direction * speed
         
         if direction > 0 && !facingRight {
@@ -373,6 +372,7 @@ class Enemy: SKSpriteNode {
         
         self.scene?.addChild(missile)
         
+        let speed: CGFloat = 200
         let moveAction = SKAction.move(by: CGVector(dx: cos(angle) * 2000, dy: sin(angle) * 2000), duration: 5.0)
         missile.run(SKAction.sequence([
             moveAction,
@@ -444,54 +444,30 @@ class Enemy: SKSpriteNode {
 // -----------------------------------------------------------------------------
 
 class MovingPlatform: SKSpriteNode {
-    private var range: CGFloat
-    private var horizontal: Bool
-    private var startPos: CGPoint
-    private var moveSpeed: CGFloat = 100
-    private var direction: CGFloat = 1
-    
     init(size: CGSize, range: CGFloat, horizontal: Bool) {
-        self.range = range
-        self.horizontal = horizontal
-        self.startPos = .zero // Will be set after position is set
         let texture = SKTexture(imageNamed: "TilePlatform")
         super.init(texture: texture, color: .white, size: size)
         
         self.name = "moving_platform"
         self.physicsBody = SKPhysicsBody(rectangleOf: size)
-        self.physicsBody?.isDynamic = true
-        self.physicsBody?.affectedByGravity = false
-        self.physicsBody?.allowsRotation = false
+        self.physicsBody?.isDynamic = false // Static/Kinematic for smoothness
         self.physicsBody?.categoryBitMask = PhysicsCategory.movingPlatform
         self.physicsBody?.collisionBitMask = PhysicsCategory.player
-        self.physicsBody?.friction = 1.0 // High friction so player sticks
-        self.physicsBody?.restitution = 0.0
+        self.physicsBody?.friction = 0.8
+        
+        let moveAction = horizontal ? 
+            SKAction.moveBy(x: range, y: 0, duration: 2.5) : 
+            SKAction.moveBy(x: 0, y: range, duration: 2.5)
+        
+        let sequence = SKAction.sequence([
+            moveAction,
+            moveAction.reversed()
+        ])
+        self.run(SKAction.repeatForever(sequence))
     }
     
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-    
-    func setup() {
-        self.startPos = self.position
-    }
-    
-    func update(dt: TimeInterval) {
-        if horizontal {
-            let dist = self.position.x - startPos.x
-            if abs(dist) > range {
-                direction *= -1
-                self.position.x = startPos.x + (range * direction)
-            }
-            self.physicsBody?.velocity = CGVector(dx: direction * moveSpeed, dy: 0)
-        } else {
-            let dist = self.position.y - startPos.y
-            if abs(dist) > range {
-                direction *= -1
-                self.position.y = startPos.y + (range * direction)
-            }
-            self.physicsBody?.velocity = CGVector(dx: 0, dy: direction * moveSpeed)
-        }
     }
 }
 
@@ -646,6 +622,12 @@ class LevelManager {
         
         self.currentLevel = level
         
+        // Save progress
+        let savedMax = UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel")
+        if level > savedMax {
+            UserDefaults.standard.set(level, forKey: "ProjectHydra_MaxLevel")
+        }
+        
         let ground = SKSpriteNode(imageNamed: "TileGround")
         ground.size = CGSize(width: 2500, height: 120)
         ground.position = CGPoint(x: 400, y: -250)
@@ -685,7 +667,6 @@ class LevelManager {
                 if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 6 {
                     let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 250, horizontal: Bool.random())
                     mp.position = CGPoint(x: x, y: y)
-                    mp.setup()
                     scene.addChild(mp)
                 } else {
                     let width = CGFloat.random(in: 180...300)
@@ -853,6 +834,8 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     var rightPressed = false
     var jumpPressed = false
     
+    var isLevelSelecting = false
+    
     override func didMove(to view: SKView) {
         self.removeAllChildren()
         
@@ -868,14 +851,17 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         self.addChild(player)
         
         levelManager = LevelManager(scene: self)
-        levelManager.loadLevel(1)
+        
+        // Start at saved level or 1
+        let savedMax = UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel")
+        levelManager.loadLevel(max(1, savedMax))
         
         setupHUD()
     }
     
     func setupHUD() {
         let label = SKLabelNode(fontNamed: "Courier-Bold")
-        label.text = "LEVEL 1"
+        label.text = "LEVEL \(levelManager.currentLevel)"
         label.name = "levelLabel"
         label.position = CGPoint(x: 0, y: 340)
         label.fontSize = 32
@@ -900,6 +886,14 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         enemyLabel.fontColor = .orange
         enemyLabel.zPosition = 100
         cam.addChild(enemyLabel)
+        
+        let hintLabel = SKLabelNode(fontNamed: "Courier")
+        hintLabel.text = "PRESS 'L' FOR LEVEL SELECT"
+        hintLabel.fontSize = 14
+        hintLabel.position = CGPoint(x: 0, y: -360)
+        hintLabel.fontColor = .gray
+        hintLabel.zPosition = 100
+        cam.addChild(hintLabel)
         
         let bossBarBg = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
         bossBarBg.name = "bossBarBg"
@@ -934,6 +928,8 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         let dt = currentTime - lastUpdateTime
         lastUpdateTime = currentTime
         
+        if isLevelSelecting { return }
+        
         if let hLabel = cam.childNode(withName: "healthLabel") as? SKLabelNode {
             hLabel.text = "HEALTH: \(player.health)%"
             hLabel.fontColor = player.health < 30 ? .red : (player.health < 60 ? .yellow : .green)
@@ -951,10 +947,6 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if player.health <= 0 {
             gameOver()
             return
-        }
-        
-        self.children.filter { $0.name == "moving_platform" }.forEach {
-            ($0 as? MovingPlatform)?.update(dt: dt)
         }
         
         var dx: CGFloat = 0
@@ -1053,26 +1045,92 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         overlay.run(SKAction.fadeAlpha(to: 0.9, duration: 2.0))
     }
     
+    func toggleLevelSelect() {
+        isLevelSelecting = !isLevelSelecting
+        
+        if isLevelSelecting {
+            let menu = SKShapeNode(rectOf: CGSize(width: 600, height: 500), cornerRadius: 20)
+            menu.fillColor = .black
+            menu.strokeColor = .white
+            menu.lineWidth = 4
+            menu.name = "levelSelectMenu"
+            menu.zPosition = 300
+            cam.addChild(menu)
+            
+            let title = SKLabelNode(fontNamed: "Courier-Bold")
+            title.text = "LEVEL SELECT"
+            title.fontSize = 30
+            title.position = CGPoint(x: 0, y: 200)
+            menu.addChild(title)
+            
+            let subtitle = SKLabelNode(fontNamed: "Courier")
+            subtitle.text = "Type Level Number + Enter"
+            subtitle.fontSize = 16
+            subtitle.position = CGPoint(x: 0, y: 170)
+            menu.addChild(subtitle)
+            
+            let maxLevel = max(1, UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel"))
+            for i in 1...15 {
+                let label = SKLabelNode(fontNamed: "Courier")
+                label.text = "\(i)"
+                label.fontSize = 24
+                let col = (i - 1) % 5
+                let row = (i - 1) / 5
+                label.position = CGPoint(x: -200 + CGFloat(col * 100), y: 80 - CGFloat(row * 80))
+                label.fontColor = i <= maxLevel ? .green : .darkGray
+                menu.addChild(label)
+            }
+        } else {
+            cam.childNode(withName: "levelSelectMenu")?.removeFromParent()
+        }
+    }
+    
     func startNextLevel() {
         if levelManager.currentLevel >= 15 {
             showWinScreen()
             return
         }
-        
-        let nextLevel = levelManager.currentLevel + 1
-        levelManager.loadLevel(nextLevel)
+        goToLevel(levelManager.currentLevel + 1)
+    }
+    
+    func goToLevel(_ level: Int) {
+        levelManager.loadLevel(level)
         if let label = cam.childNode(withName: "levelLabel") as? SKLabelNode {
-            label.text = "LEVEL \(nextLevel)"
-            if nextLevel == 5 { label.text = "MINIBOSS: TANK" }
-            if nextLevel == 10 { label.text = "BOSS: GATEKEEPER" }
-            if nextLevel == 15 { label.text = "THE HYDRA" }
+            label.text = "LEVEL \(level)"
+            if level == 5 { label.text = "MINIBOSS: TANK" }
+            if level == 10 { label.text = "BOSS: GATEKEEPER" }
+            if level == 15 { label.text = "THE HYDRA" }
         }
         player.position = CGPoint(x: -200, y: 0)
         player.physicsBody?.velocity = .zero
-        player.health = min(player.health + 30, 100)
+        player.health = 100
+        player.reset()
     }
     
+    var levelInputBuffer = ""
+    
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 37 { // 'L' key
+            toggleLevelSelect()
+            return
+        }
+        
+        if isLevelSelecting {
+            if event.keyCode == 36 { // Enter
+                if let level = Int(levelInputBuffer) {
+                    let maxLevel = max(1, UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel"))
+                    if level > 0 && level <= maxLevel {
+                        goToLevel(level)
+                        toggleLevelSelect()
+                    }
+                }
+                levelInputBuffer = ""
+            } else if let chars = event.characters, let _ = Int(chars) {
+                levelInputBuffer += chars
+            }
+            return
+        }
+        
         switch event.keyCode {
         case 0: leftPressed = true
         case 2: rightPressed = true
@@ -1092,7 +1150,9 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     }
     
     override func mouseDown(with event: NSEvent) {
-        player.shoot(scene: self)
+        if !isLevelSelecting {
+            player.shoot(scene: self)
+        }
     }
     
     func didBegin(_ contact: SKPhysicsContact) {
