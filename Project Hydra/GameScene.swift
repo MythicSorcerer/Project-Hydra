@@ -27,6 +27,9 @@ class Player: SKSpriteNode {
     
     private var facingRight = true
     var isGrounded = false
+    var isTouchingWallLeft = false
+    var isTouchingWallRight = false
+    
     var health = 100
     var maxHealth = 100
     var isInvulnerable = false
@@ -39,13 +42,14 @@ class Player: SKSpriteNode {
         self.name = "player"
         self.zPosition = 10
         
-        self.physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 30, height: 45))
+        // Physics body is slightly smaller than the visual to prevent getting stuck
+        self.physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 28, height: 42))
         self.physicsBody?.categoryBitMask = PhysicsCategory.player
-        self.physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.enemyProjectile | PhysicsCategory.boss | PhysicsCategory.ground | PhysicsCategory.trap | PhysicsCategory.portal
+        self.physicsBody?.contactTestBitMask = PhysicsCategory.enemy | PhysicsCategory.enemyProjectile | PhysicsCategory.boss | PhysicsCategory.ground | PhysicsCategory.trap | PhysicsCategory.portal | PhysicsCategory.movingPlatform
         self.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall | PhysicsCategory.movingPlatform
         self.physicsBody?.allowsRotation = false
         self.physicsBody?.restitution = 0.0
-        self.physicsBody?.friction = 0.5
+        self.physicsBody?.friction = 0.1 // Lower friction prevents sticking to sides
         self.physicsBody?.linearDamping = 0.1
     }
     
@@ -80,9 +84,18 @@ class Player: SKSpriteNode {
     
     func jump() {
         if isGrounded {
+            // Normal Jump
             self.physicsBody?.velocity.dy = 0 
             self.physicsBody?.applyImpulse(CGVector(dx: 0, dy: 65))
             isGrounded = false
+        } else if isTouchingWallLeft {
+            // Wall Jump Right
+            self.physicsBody?.velocity = CGVector(dx: 400, dy: 600)
+            self.run(SKAction.rotate(byAngle: -.pi * 2, duration: 0.4))
+        } else if isTouchingWallRight {
+            // Wall Jump Left
+            self.physicsBody?.velocity = CGVector(dx: -400, dy: 600)
+            self.run(SKAction.rotate(byAngle: .pi * 2, duration: 0.4))
         }
     }
     
@@ -113,12 +126,9 @@ class Player: SKSpriteNode {
     
     func takeDamage(_ amount: Int) {
         if isInvulnerable || health <= 0 { return }
-        
         health -= amount
         if health < 0 { health = 0 }
-        
         hit()
-        
         isInvulnerable = true
         self.run(SKAction.sequence([
             SKAction.wait(forDuration: 1.0),
@@ -139,6 +149,7 @@ class Player: SKSpriteNode {
         isInvulnerable = false
         self.alpha = 1.0
         self.colorBlendFactor = 0.0
+        self.zRotation = 0
     }
 }
 
@@ -294,27 +305,16 @@ class Enemy: SKSpriteNode {
                 let speed: CGFloat = 40
                 self.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
                 self.xScale = dx > 0 ? -1 : 1
-                 
-                 if Int.random(in: 0...100) < 1 {
-                     shoot(target: player.position)
-                 }
-                 if Int.random(in: 0...300) < 1 {
-                     shootMissile(target: player.position)
-                 }
+                 if Int.random(in: 0...100) < 1 { shoot(target: player.position) }
+                 if Int.random(in: 0...300) < 1 { shootMissile(target: player.position) }
             }
         case .boss:
             if abs(dx) < 1500 {
                 let speed: CGFloat = 30
                 self.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
                 self.xScale = dx > 0 ? -1 : 1
-                 
-                if Int.random(in: 0...60) < 1 {
-                    shoot(target: player.position)
-                }
-                
-                if Int.random(in: 0...240) < 1 {
-                    beamAttack(player: player)
-                }
+                if Int.random(in: 0...60) < 1 { shoot(target: player.position) }
+                if Int.random(in: 0...240) < 1 { beamAttack(player: player) }
             }
         case .hydraHead:
             if dist < 800 {
@@ -330,7 +330,6 @@ class Enemy: SKSpriteNode {
         bullet.size = CGSize(width: 15, height: 15)
         bullet.position = self.position
         bullet.zPosition = 9
-        
         bullet.physicsBody = SKPhysicsBody(circleOfRadius: 7)
         bullet.physicsBody?.categoryBitMask = PhysicsCategory.enemyProjectile
         bullet.physicsBody?.contactTestBitMask = PhysicsCategory.player
@@ -341,15 +340,9 @@ class Enemy: SKSpriteNode {
         let dy = target.y - self.position.y
         let angle = atan2(dy, dx)
         let speed: CGFloat = 350
-        
         bullet.physicsBody?.velocity = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
-        
         self.scene?.addChild(bullet)
-        
-        bullet.run(SKAction.sequence([
-            SKAction.wait(forDuration: 4.0),
-            SKAction.removeFromParent()
-        ]))
+        bullet.run(SKAction.sequence([SKAction.wait(forDuration: 4.0), SKAction.removeFromParent()]))
     }
     
     func shootMissile(target: CGPoint) {
@@ -358,26 +351,18 @@ class Enemy: SKSpriteNode {
         missile.strokeColor = .red
         missile.position = self.position
         missile.zPosition = 8
-        
         missile.physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 40, height: 15))
         missile.physicsBody?.categoryBitMask = PhysicsCategory.enemyProjectile
         missile.physicsBody?.contactTestBitMask = PhysicsCategory.player
         missile.physicsBody?.collisionBitMask = PhysicsCategory.none
         missile.physicsBody?.affectedByGravity = false
-        
         let dx = target.x - self.position.x
         let dy = target.y - self.position.y
         let angle = atan2(dy, dx)
         missile.zRotation = angle
-        
         self.scene?.addChild(missile)
-        
-        let speed: CGFloat = 200
         let moveAction = SKAction.move(by: CGVector(dx: cos(angle) * 2000, dy: sin(angle) * 2000), duration: 5.0)
-        missile.run(SKAction.sequence([
-            moveAction,
-            SKAction.removeFromParent()
-        ]))
+        missile.run(SKAction.sequence([moveAction, SKAction.removeFromParent()]))
     }
     
     func beamAttack(player: Player) {
@@ -387,30 +372,21 @@ class Enemy: SKSpriteNode {
         let dx = player.position.x - self.position.x
         let dy = player.position.y - self.position.y
         path.addLine(to: CGPoint(x: dx, y: dy))
-        
         beam.path = path
         beam.strokeColor = .magenta
         beam.lineWidth = 4
         beam.glowWidth = 10
         beam.zPosition = 4
-        
         self.addChild(beam)
-        
         beam.alpha = 0.2
-        let flash = SKAction.sequence([
-            SKAction.fadeAlpha(to: 0.8, duration: 0.1),
-            SKAction.fadeAlpha(to: 0.2, duration: 0.1)
-        ])
-        
+        let flash = SKAction.sequence([SKAction.fadeAlpha(to: 0.8, duration: 0.1), SKAction.fadeAlpha(to: 0.2, duration: 0.1)])
         beam.run(SKAction.sequence([
             SKAction.repeat(flash, count: 5),
             SKAction.run {
                 beam.alpha = 1.0
                 beam.lineWidth = 15
                 let dist = sqrt(dx*dx + dy*dy)
-                if dist < 1000 {
-                    player.takeDamage(30)
-                }
+                if dist < 1000 { player.takeDamage(30) }
             },
             SKAction.wait(forDuration: 0.5),
             SKAction.fadeOut(withDuration: 0.2),
@@ -422,10 +398,7 @@ class Enemy: SKSpriteNode {
         health -= amount
         if health <= 0 {
             let explosion = SKAction.sequence([
-                SKAction.group([
-                    SKAction.scale(to: 1.5, duration: 0.1),
-                    SKAction.fadeOut(withDuration: 0.1)
-                ]),
+                SKAction.group([SKAction.scale(to: 1.5, duration: 0.1), SKAction.fadeOut(withDuration: 0.1)]),
                 SKAction.removeFromParent()
             ])
             self.run(explosion)
@@ -447,10 +420,9 @@ class MovingPlatform: SKSpriteNode {
     init(size: CGSize, range: CGFloat, horizontal: Bool) {
         let texture = SKTexture(imageNamed: "TilePlatform")
         super.init(texture: texture, color: .white, size: size)
-        
         self.name = "moving_platform"
         self.physicsBody = SKPhysicsBody(rectangleOf: size)
-        self.physicsBody?.isDynamic = false // Static/Kinematic for smoothness
+        self.physicsBody?.isDynamic = false
         self.physicsBody?.categoryBitMask = PhysicsCategory.movingPlatform
         self.physicsBody?.collisionBitMask = PhysicsCategory.player
         self.physicsBody?.friction = 0.8
@@ -458,17 +430,10 @@ class MovingPlatform: SKSpriteNode {
         let moveAction = horizontal ? 
             SKAction.moveBy(x: range, y: 0, duration: 2.5) : 
             SKAction.moveBy(x: 0, y: range, duration: 2.5)
-        
-        let sequence = SKAction.sequence([
-            moveAction,
-            moveAction.reversed()
-        ])
+        let sequence = SKAction.sequence([moveAction, moveAction.reversed()])
         self.run(SKAction.repeatForever(sequence))
     }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 // -----------------------------------------------------------------------------
@@ -479,32 +444,22 @@ class Trap: SKSpriteNode {
     init() {
         let texture = SKTexture(imageNamed: "TileGround")
         super.init(texture: texture, color: .red, size: CGSize(width: 40, height: 20))
-        
         self.name = "trap"
         self.colorBlendFactor = 1.0
         self.color = .red
-        
         self.physicsBody = SKPhysicsBody(rectangleOf: self.size)
         self.physicsBody?.isDynamic = false
         self.physicsBody?.categoryBitMask = PhysicsCategory.trap
         self.physicsBody?.contactTestBitMask = PhysicsCategory.player
     }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 // -----------------------------------------------------------------------------
 // MARK: - Hydra Boss
 // -----------------------------------------------------------------------------
 
-enum HydraState {
-    case shooting
-    case charging
-    case summoning
-    case resting
-}
+enum HydraState { case shooting, charging, summoning, resting }
 
 class HydraBoss: SKNode {
     var body: Enemy!
@@ -517,7 +472,6 @@ class HydraBoss: SKNode {
         super.init()
         self.position = position
         self.name = "hydra_boss"
-        
         body = Enemy(type: .hydraHead)
         body.texture = SKTexture(imageNamed: "HydraBody")
         body.size = CGSize(width: 200, height: 150)
@@ -526,7 +480,6 @@ class HydraBoss: SKNode {
         body.maxHealth = 600
         body.position = .zero
         self.addChild(body)
-        
         for i in 0..<3 {
             let head = Enemy(type: .hydraHead)
             head.health = 150
@@ -536,32 +489,17 @@ class HydraBoss: SKNode {
             self.addChild(head)
         }
     }
-    
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     
     func update(player: Player, currentTime: TimeInterval, dt: TimeInterval) {
         if body.health <= 0 { return }
-        
-        if self.position.y < -1200 {
-            body.health = 0
-            return
-        }
-        
+        if self.position.y < -1200 { body.health = 0; return }
         stateTimer += dt
-        
-        if stateTimer >= nextStateTime {
-            stateTimer = 0
-            switchState()
-        }
-        
+        if stateTimer >= nextStateTime { stateTimer = 0; switchState() }
         switch state {
         case .shooting:
             for head in heads where head.health > 0 {
-                if Int.random(in: 0...60) < 1 {
-                    head.shoot(target: player.position)
-                }
+                if Int.random(in: 0...60) < 1 { head.shoot(target: player.position) }
                 let offset = sin(currentTime * 2 + CGFloat(heads.firstIndex(of: head)!)) * 20
                 head.position.y = 80 + offset
             }
@@ -583,7 +521,6 @@ class HydraBoss: SKNode {
             for head in heads { head.position.y = 20 }
         }
     }
-    
     func switchState() {
         let states: [HydraState] = [.shooting, .charging, .summoning, .resting]
         state = states.randomElement()!
@@ -601,33 +538,22 @@ class HydraBoss: SKNode {
 // -----------------------------------------------------------------------------
 
 class LevelManager {
-    
     weak var scene: SKScene?
     var currentLevel = 1
     var portalSpawned = false
-    
-    init(scene: SKScene) {
-        self.scene = scene
-    }
+    init(scene: SKScene) { self.scene = scene }
     
     func loadLevel(_ level: Int) {
         guard let scene = scene else { return }
         portalSpawned = false
-        
         scene.children.filter { 
             $0.name == "enemy" || $0.name == "platform" || $0.name == "ground" || 
             $0.name == "bullet" || $0.name == "wall" || $0.name == "hydra_boss" ||
             $0.name == "moving_platform" || $0.name == "trap" || $0.name == "portal"
         }.forEach { $0.removeFromParent() }
-        
         self.currentLevel = level
-        
-        // Save progress
         let savedMax = UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel")
-        if level > savedMax {
-            UserDefaults.standard.set(level, forKey: "ProjectHydra_MaxLevel")
-        }
-        
+        if level > savedMax { UserDefaults.standard.set(level, forKey: "ProjectHydra_MaxLevel") }
         let ground = SKSpriteNode(imageNamed: "TileGround")
         ground.size = CGSize(width: 2500, height: 120)
         ground.position = CGPoint(x: 400, y: -250)
@@ -636,34 +562,21 @@ class LevelManager {
         ground.physicsBody?.categoryBitMask = PhysicsCategory.ground
         ground.name = "ground"
         scene.addChild(ground)
-        
-        if level == 5 {
-            spawnMiniboss()
-        } else if level == 10 {
-            spawnBoss()
-        } else if level == 15 {
-            spawnHydra()
-        } else {
-            spawnStandardLevel(difficulty: level)
-        }
+        if level == 5 { spawnMiniboss() } else if level == 10 { spawnBoss() } else if level == 15 { spawnHydra() } else { spawnStandardLevel(difficulty: level) }
     }
     
     func spawnStandardLevel(difficulty: Int) {
         guard let scene = scene else { return }
-        
         var lastX: CGFloat = 800
         var lastY: CGFloat = -150
-        
         let clusterCount = 5 + (difficulty / 2)
         for i in 0..<clusterCount {
             let clusterBaseX = lastX + CGFloat.random(in: 250...400)
             let clusterBaseY = max(-250, min(300, lastY + CGFloat.random(in: -100...100)))
-            
             let platformsInCluster = 2 + Int.random(in: 0...2)
             for j in 0..<platformsInCluster {
                 let x = clusterBaseX + CGFloat(j * 220)
                 let y = clusterBaseY + CGFloat.random(in: -30...30)
-                
                 if difficulty >= 3 && i > 2 && Int.random(in: 0...10) > 6 {
                     let mp = MovingPlatform(size: CGSize(width: 200, height: 40), range: 250, horizontal: Bool.random())
                     mp.position = CGPoint(x: x, y: y)
@@ -678,26 +591,17 @@ class LevelManager {
                     platform.physicsBody?.categoryBitMask = PhysicsCategory.ground
                     platform.name = "platform"
                     scene.addChild(platform)
-                    
                     if difficulty >= 4 && Int.random(in: 0...10) > 7 {
-                        let trap = Trap()
-                        trap.position = CGPoint(x: x, y: y + 30)
-                        scene.addChild(trap)
+                        let trap = Trap(); trap.position = CGPoint(x: x, y: y + 30); scene.addChild(trap)
                     }
                 }
-                
                 if Bool.random() || (i == 0 && j == 0) {
                     let enemyType: EnemyType = (difficulty > 3 && Int.random(in: 0...10) > 6) ? .flyer : .walker
-                    let enemy = Enemy(type: enemyType)
-                    enemy.position = CGPoint(x: x, y: y + 80)
-                    scene.addChild(enemy)
+                    let enemy = Enemy(type: enemyType); enemy.position = CGPoint(x: x, y: y + 80); scene.addChild(enemy)
                 }
-                
-                lastX = x
-                lastY = y
+                lastX = x; lastY = y
             }
         }
-        
         let endX = lastX + 600
         let endPlatform = SKSpriteNode(imageNamed: "TileGround")
         endPlatform.size = CGSize(width: 800, height: 80)
@@ -711,109 +615,57 @@ class LevelManager {
     
     func spawnMiniboss() {
         guard let scene = scene else { return }
-        let boss = Enemy(type: .miniboss)
-        boss.position = CGPoint(x: 1000, y: 0)
-        scene.addChild(boss)
-        
-        let arena = SKSpriteNode(imageNamed: "TileGround")
-        arena.size = CGSize(width: 2500, height: 60)
-        arena.position = CGPoint(x: 1000, y: -150)
-        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
-        arena.physicsBody?.isDynamic = false
-        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
-        arena.name = "platform"
-        scene.addChild(arena)
+        let boss = Enemy(type: .miniboss); boss.position = CGPoint(x: 1000, y: 0); scene.addChild(boss)
+        let arena = SKSpriteNode(imageNamed: "TileGround"); arena.size = CGSize(width: 2500, height: 60)
+        arena.position = CGPoint(x: 1000, y: -150); arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false; arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"; scene.addChild(arena)
     }
     
     func spawnBoss() {
         guard let scene = scene else { return }
-        let boss = Enemy(type: .boss)
-        boss.position = CGPoint(x: 1200, y: 100)
-        scene.addChild(boss)
-        
-        let arena = SKSpriteNode(imageNamed: "TileGround")
-        arena.size = CGSize(width: 3000, height: 80)
-        arena.position = CGPoint(x: 1200, y: -150)
-        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
-        arena.physicsBody?.isDynamic = false
-        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
-        arena.name = "platform"
-        scene.addChild(arena)
+        let boss = Enemy(type: .boss); boss.position = CGPoint(x: 1200, y: 100); scene.addChild(boss)
+        let arena = SKSpriteNode(imageNamed: "TileGround"); arena.size = CGSize(width: 3000, height: 80)
+        arena.position = CGPoint(x: 1200, y: -150); arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false; arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"; scene.addChild(arena)
     }
     
     func spawnHydra() {
         guard let scene = scene else { return }
-        let hydra = HydraBoss(position: CGPoint(x: 1500, y: 100))
-        scene.addChild(hydra)
-        
-        let arena = SKSpriteNode(imageNamed: "TileGround")
-        arena.size = CGSize(width: 4000, height: 80)
-        arena.position = CGPoint(x: 1500, y: -200)
-        arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
-        arena.physicsBody?.isDynamic = false
-        arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
-        arena.name = "platform"
-        scene.addChild(arena)
+        let hydra = HydraBoss(position: CGPoint(x: 1500, y: 100)); scene.addChild(hydra)
+        let arena = SKSpriteNode(imageNamed: "TileGround"); arena.size = CGSize(width: 4000, height: 80)
+        arena.position = CGPoint(x: 1500, y: -200); arena.physicsBody = SKPhysicsBody(rectangleOf: arena.size)
+        arena.physicsBody?.isDynamic = false; arena.physicsBody?.categoryBitMask = PhysicsCategory.ground
+        arena.name = "platform"; scene.addChild(arena)
     }
     
     func spawnPortal() {
         guard let scene = scene, !portalSpawned else { return }
         portalSpawned = true
-        
         let portal = SKShapeNode(circleOfRadius: 50)
-        portal.fillColor = .purple
-        portal.strokeColor = .magenta
-        portal.glowWidth = 10
-        portal.name = "portal"
-        portal.zPosition = 5
-        
+        portal.fillColor = .purple; portal.strokeColor = .magenta; portal.glowWidth = 10
+        portal.name = "portal"; portal.zPosition = 5
         let endNodes = scene.children.filter { $0.name == "platform" || $0.name == "ground" }
-        if let lastNode = endNodes.sorted(by: { $0.position.x < $1.position.x }).last {
-            portal.position = CGPoint(x: lastNode.position.x, y: lastNode.position.y + 120)
-        } else {
-            portal.position = CGPoint(x: 1000, y: 100)
-        }
-        
-        portal.physicsBody = SKPhysicsBody(circleOfRadius: 50)
-        portal.physicsBody?.isDynamic = false
-        portal.physicsBody?.categoryBitMask = PhysicsCategory.portal
-        portal.physicsBody?.contactTestBitMask = PhysicsCategory.player
-        
+        if let lastNode = endNodes.sorted(by: { $0.position.x < $1.position.x }).last { portal.position = CGPoint(x: lastNode.position.x, y: lastNode.position.y + 120) } else { portal.position = CGPoint(x: 1000, y: 100) }
+        portal.physicsBody = SKPhysicsBody(circleOfRadius: 50); portal.physicsBody?.isDynamic = false
+        portal.physicsBody?.categoryBitMask = PhysicsCategory.portal; portal.physicsBody?.contactTestBitMask = PhysicsCategory.player
         scene.addChild(portal)
-        
-        let rotate = SKAction.rotate(byAngle: .pi * 2, duration: 2.0)
-        portal.run(SKAction.repeatForever(rotate))
-        
+        let rotate = SKAction.rotate(byAngle: .pi * 2, duration: 2.0); portal.run(SKAction.repeatForever(rotate))
         let label = SKLabelNode(fontNamed: "Courier-Bold")
         var labelText = "NEXT LEVEL"
-        if currentLevel == 4 { labelText = "NEXT: MINIBOSS" }
-        else if currentLevel == 9 { labelText = "NEXT: BOSS" }
-        else if currentLevel == 14 { labelText = "NEXT: FINAL BOSS" }
-        else if currentLevel >= 15 { labelText = "FINISH" }
-        
-        label.text = labelText
-        label.fontSize = 20
-        label.position = CGPoint(x: 0, y: 70)
-        portal.addChild(label)
+        if currentLevel == 4 { labelText = "NEXT: MINIBOSS" } else if currentLevel == 9 { labelText = "NEXT: BOSS" } else if currentLevel == 14 { labelText = "NEXT: FINAL BOSS" } else if currentLevel >= 15 { labelText = "FINISH" }
+        label.text = labelText; label.fontSize = 20; label.position = CGPoint(x: 0, y: 70); portal.addChild(label)
     }
     
     func checkLevelCompletion() -> Int {
         guard let scene = scene else { return 0 }
-        
         let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") }
-        
         var totalHealth = 0
         for node in enemies {
-            if let enemy = node as? Enemy {
-                if enemy.health > 0 { totalHealth += 1 }
-            } else if let hydra = node as? HydraBoss {
-                if hydra.body.health > 0 { totalHealth += 1 }
-            }
+            if let enemy = node as? Enemy { if enemy.health > 0 { totalHealth += 1 } } else if let hydra = node as? HydraBoss { if hydra.body.health > 0 { totalHealth += 1 } }
         }
-        
-        if totalHealth == 0 && !portalSpawned {
-            spawnPortal()
-        }
+        if totalHealth == 0 && !portalSpawned { spawnPortal() }
         return totalHealth
     }
 }
@@ -827,269 +679,125 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     var player: Player!
     var levelManager: LevelManager!
     var cam: SKCameraNode!
-    
     var lastUpdateTime: TimeInterval = 0
-    
     var leftPressed = false
     var rightPressed = false
     var jumpPressed = false
-    
     var isLevelSelecting = false
     
     override func didMove(to view: SKView) {
         self.removeAllChildren()
-        
         physicsWorld.gravity = CGVector(dx: 0, dy: -25.0)
         physicsWorld.contactDelegate = self
-        
-        cam = SKCameraNode()
-        self.camera = cam
-        self.addChild(cam)
-        
-        player = Player()
-        player.position = CGPoint(x: -200, y: 0)
-        self.addChild(player)
-        
+        cam = SKCameraNode(); self.camera = cam; self.addChild(cam)
+        player = Player(); player.position = CGPoint(x: -200, y: 0); self.addChild(player)
         levelManager = LevelManager(scene: self)
-        
-        // Start at saved level or 1
         let savedMax = UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel")
         levelManager.loadLevel(max(1, savedMax))
-        
         setupHUD()
     }
     
     func setupHUD() {
-        let label = SKLabelNode(fontNamed: "Courier-Bold")
-        label.text = "LEVEL \(levelManager.currentLevel)"
-        label.name = "levelLabel"
-        label.position = CGPoint(x: 0, y: 340)
-        label.fontSize = 32
-        label.fontColor = .white
-        label.zPosition = 100
-        cam.addChild(label)
-        
-        let healthLabel = SKLabelNode(fontNamed: "Courier-Bold")
-        healthLabel.text = "HEALTH: 100%"
-        healthLabel.name = "healthLabel"
-        healthLabel.position = CGPoint(x: -350, y: 340)
-        healthLabel.fontSize = 20
-        healthLabel.fontColor = .green
-        healthLabel.zPosition = 100
-        cam.addChild(healthLabel)
-        
-        let enemyLabel = SKLabelNode(fontNamed: "Courier-Bold")
-        enemyLabel.text = "ENEMIES: 0"
-        enemyLabel.name = "enemyLabel"
-        enemyLabel.position = CGPoint(x: 350, y: 340)
-        enemyLabel.fontSize = 20
-        enemyLabel.fontColor = .orange
-        enemyLabel.zPosition = 100
-        cam.addChild(enemyLabel)
-        
-        let hintLabel = SKLabelNode(fontNamed: "Courier")
-        hintLabel.text = "PRESS 'L' FOR LEVEL SELECT"
-        hintLabel.fontSize = 14
-        hintLabel.position = CGPoint(x: 0, y: -360)
-        hintLabel.fontColor = .gray
-        hintLabel.zPosition = 100
-        cam.addChild(hintLabel)
-        
-        let bossBarBg = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
-        bossBarBg.name = "bossBarBg"
-        bossBarBg.fillColor = .darkGray
-        bossBarBg.strokeColor = .white
-        bossBarBg.position = CGPoint(x: 0, y: 300)
-        bossBarBg.isHidden = true
-        bossBarBg.zPosition = 100
-        cam.addChild(bossBarBg)
-        
-        let bossBarFill = SKShapeNode(rectOf: CGSize(width: 500, height: 25))
-        bossBarFill.name = "bossBarFill"
-        bossBarFill.fillColor = .red
-        bossBarFill.strokeColor = .clear
-        bossBarFill.position = CGPoint(x: 0, y: 300)
-        bossBarFill.isHidden = true
-        bossBarFill.zPosition = 101
-        cam.addChild(bossBarFill)
-        
-        let bossNameLabel = SKLabelNode(fontNamed: "Courier-Bold")
-        bossNameLabel.name = "bossNameLabel"
-        bossNameLabel.position = CGPoint(x: 0, y: 260)
-        bossNameLabel.fontSize = 22
-        bossNameLabel.fontColor = .white
-        bossNameLabel.isHidden = true
-        bossNameLabel.zPosition = 100
-        cam.addChild(bossNameLabel)
+        let label = SKLabelNode(fontNamed: "Courier-Bold"); label.text = "LEVEL \(levelManager.currentLevel)"
+        label.name = "levelLabel"; label.position = CGPoint(x: 0, y: 340); label.fontSize = 32; label.fontColor = .white
+        label.zPosition = 100; cam.addChild(label)
+        let healthLabel = SKLabelNode(fontNamed: "Courier-Bold"); healthLabel.text = "HEALTH: 100%"
+        healthLabel.name = "healthLabel"; healthLabel.position = CGPoint(x: -350, y: 340); healthLabel.fontSize = 20
+        healthLabel.fontColor = .green; healthLabel.zPosition = 100; cam.addChild(healthLabel)
+        let enemyLabel = SKLabelNode(fontNamed: "Courier-Bold"); enemyLabel.text = "ENEMIES: 0"
+        enemyLabel.name = "enemyLabel"; enemyLabel.position = CGPoint(x: 350, y: 340); enemyLabel.fontSize = 20
+        enemyLabel.fontColor = .orange; enemyLabel.zPosition = 100; cam.addChild(enemyLabel)
+        let hintLabel = SKLabelNode(fontNamed: "Courier"); hintLabel.text = "PRESS 'L' FOR LEVEL SELECT"
+        hintLabel.fontSize = 14; hintLabel.position = CGPoint(x: 0, y: -360); hintLabel.fontColor = .gray
+        hintLabel.zPosition = 100; cam.addChild(hintLabel)
+        let bossBarBg = SKShapeNode(rectOf: CGSize(width: 500, height: 25)); bossBarBg.name = "bossBarBg"; bossBarBg.fillColor = .darkGray
+        bossBarBg.strokeColor = .white; bossBarBg.position = CGPoint(x: 0, y: 300); bossBarBg.isHidden = true
+        bossBarBg.zPosition = 100; cam.addChild(bossBarBg)
+        let bossBarFill = SKShapeNode(rectOf: CGSize(width: 500, height: 25)); bossBarFill.name = "bossBarFill"; bossBarFill.fillColor = .red
+        bossBarFill.strokeColor = .clear; bossBarFill.position = CGPoint(x: 0, y: 300); bossBarFill.isHidden = true
+        bossBarFill.zPosition = 101; cam.addChild(bossBarFill)
+        let bossNameLabel = SKLabelNode(fontNamed: "Courier-Bold"); bossNameLabel.name = "bossNameLabel"
+        bossNameLabel.position = CGPoint(x: 0, y: 260); bossNameLabel.fontSize = 22; bossNameLabel.fontColor = .white
+        bossNameLabel.isHidden = true; bossNameLabel.zPosition = 100; cam.addChild(bossNameLabel)
     }
     
     override func update(_ currentTime: TimeInterval) {
         if lastUpdateTime == 0 { lastUpdateTime = currentTime }
         let dt = currentTime - lastUpdateTime
         lastUpdateTime = currentTime
-        
         if isLevelSelecting { return }
-        
         if let hLabel = cam.childNode(withName: "healthLabel") as? SKLabelNode {
-            hLabel.text = "HEALTH: \(player.health)%"
-            hLabel.fontColor = player.health < 30 ? .red : (player.health < 60 ? .yellow : .green)
+            hLabel.text = "HEALTH: \(player.health)%"; hLabel.fontColor = player.health < 30 ? .red : (player.health < 60 ? .yellow : .green)
         }
-        
         let enemiesCount = levelManager.checkLevelCompletion()
         if let eLabel = cam.childNode(withName: "enemyLabel") as? SKLabelNode {
             eLabel.text = "ENEMIES: \(enemiesCount)"
-            if enemiesCount == 0 { eLabel.fontColor = .cyan; eLabel.text = "FIND PORTAL" }
-            else { eLabel.fontColor = .orange }
+            if enemiesCount == 0 { eLabel.fontColor = .cyan; eLabel.text = "FIND PORTAL" } else { eLabel.fontColor = .orange }
         }
-        
         updateBossBar()
-        
-        if player.health <= 0 {
-            gameOver()
-            return
-        }
-        
+        if player.health <= 0 { gameOver(); return }
         var dx: CGFloat = 0
         if leftPressed { dx -= 1 }
         if rightPressed { dx += 1 }
         player.move(direction: dx)
+        if jumpPressed { player.jump() }
+        let lerp: CGFloat = 0.1; let targetX = player.position.x; let targetY = max(player.position.y + 100, 0)
+        cam.position.x += (targetX - cam.position.x) * lerp; cam.position.y += (targetY - cam.position.y) * lerp
+        self.children.filter { $0 is Enemy }.forEach { ($0 as? Enemy)?.update(player: player, scene: self) }
+        if let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss { hydra.update(player: player, currentTime: currentTime, dt: dt) }
+        if player.position.y < -1200 { player.takeDamage(100) }
         
-        if jumpPressed {
-            player.jump()
-        }
-        
-        let lerp: CGFloat = 0.1
-        let targetX = player.position.x
-        let targetY = max(player.position.y + 100, 0)
-        cam.position.x += (targetX - cam.position.x) * lerp
-        cam.position.y += (targetY - cam.position.y) * lerp
-        
-        self.children.filter { $0 is Enemy }.forEach {
-            ($0 as? Enemy)?.update(player: player, scene: self)
-        }
-        
-        if let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss {
-            hydra.update(player: player, currentTime: currentTime, dt: dt)
-        }
-        
-        if player.position.y < -1200 {
-            player.takeDamage(100)
+        // GROUND CHECK REINFORCEMENT (Prevents "stuck" state)
+        // If the player has a vertical velocity near zero, they are likely grounded
+        if abs(player.physicsBody?.velocity.dy ?? 0) < 0.1 {
+            player.isGrounded = true
         }
     }
     
     func updateBossBar() {
         let boss = self.children.compactMap { $0 as? Enemy }.first { $0.bossName != nil }
         let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss
-        
         let activeBoss = boss ?? hydra?.body
-        
         if let b = activeBoss {
-            cam.childNode(withName: "bossBarBg")?.isHidden = false
-            cam.childNode(withName: "bossBarFill")?.isHidden = false
+            cam.childNode(withName: "bossBarBg")?.isHidden = false; cam.childNode(withName: "bossBarFill")?.isHidden = false
             cam.childNode(withName: "bossNameLabel")?.isHidden = false
-            
-            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode {
-                let pct = CGFloat(b.health) / CGFloat(b.maxHealth)
-                fill.xScale = max(0, pct)
-            }
-            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode {
-                nameLabel.text = b.bossName ?? "BOSS"
-            }
+            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode { let pct = CGFloat(b.health) / CGFloat(b.maxHealth); fill.xScale = max(0, pct) }
+            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode { nameLabel.text = b.bossName ?? "BOSS" }
         } else {
-            cam.childNode(withName: "bossBarBg")?.isHidden = true
-            cam.childNode(withName: "bossBarFill")?.isHidden = true
-            cam.childNode(withName: "bossNameLabel")?.isHidden = true
+            cam.childNode(withName: "bossBarBg")?.isHidden = true; cam.childNode(withName: "bossBarFill")?.isHidden = true; cam.childNode(withName: "bossNameLabel")?.isHidden = true
         }
     }
     
     func gameOver() {
-        player.health = 100
-        player.reset()
-        levelManager.loadLevel(levelManager.currentLevel)
-        player.position = CGPoint(x: -200, y: 0)
-        player.physicsBody?.velocity = .zero
-        
-        let overlay = SKLabelNode(fontNamed: "Courier-Bold")
-        overlay.text = "SYSTEM FAILURE - REBOOTING..."
-        overlay.fontSize = 40
-        overlay.fontColor = .red
-        overlay.position = CGPoint(x: 0, y: 0)
-        cam.addChild(overlay)
-        overlay.run(SKAction.sequence([
-            SKAction.wait(forDuration: 1.5),
-            SKAction.removeFromParent()
-        ]))
+        player.health = 100; player.reset(); levelManager.loadLevel(levelManager.currentLevel); player.position = CGPoint(x: -200, y: 0); player.physicsBody?.velocity = .zero
+        let overlay = SKLabelNode(fontNamed: "Courier-Bold"); overlay.text = "SYSTEM FAILURE - REBOOTING..."; overlay.fontSize = 40; overlay.fontColor = .red; overlay.position = CGPoint(x: 0, y: 0)
+        cam.addChild(overlay); overlay.run(SKAction.sequence([SKAction.wait(forDuration: 1.5), SKAction.removeFromParent()]))
     }
     
     func showWinScreen() {
-        let overlay = SKShapeNode(rectOf: CGSize(width: 2000, height: 2000))
-        overlay.fillColor = .black
-        overlay.alpha = 0.0
-        overlay.zPosition = 200
-        cam.addChild(overlay)
-        
-        let winLabel = SKLabelNode(fontNamed: "Courier-Bold")
-        winLabel.text = "PROJECT HYDRA NEUTRALIZED"
-        winLabel.fontSize = 40
-        winLabel.fontColor = .green
-        winLabel.position = CGPoint(x: 0, y: 50)
-        overlay.addChild(winLabel)
-        
-        let subLabel = SKLabelNode(fontNamed: "Courier")
-        subLabel.text = "YOU WIN! SYSTEM RESTORED."
-        subLabel.fontSize = 20
-        subLabel.fontColor = .white
-        subLabel.position = CGPoint(x: 0, y: -20)
-        overlay.addChild(subLabel)
-        
+        let overlay = SKShapeNode(rectOf: CGSize(width: 2000, height: 2000)); overlay.fillColor = .black; overlay.alpha = 0.0; overlay.zPosition = 200; cam.addChild(overlay)
+        let winLabel = SKLabelNode(fontNamed: "Courier-Bold"); winLabel.text = "PROJECT HYDRA NEUTRALIZED"; winLabel.fontSize = 40; winLabel.fontColor = .green; winLabel.position = CGPoint(x: 0, y: 50); overlay.addChild(winLabel)
+        let subLabel = SKLabelNode(fontNamed: "Courier"); subLabel.text = "YOU WIN! SYSTEM RESTORED."; subLabel.fontSize = 20; subLabel.fontColor = .white; subLabel.position = CGPoint(x: 0, y: -20); overlay.addChild(subLabel)
         overlay.run(SKAction.fadeAlpha(to: 0.9, duration: 2.0))
     }
     
     func toggleLevelSelect() {
         isLevelSelecting = !isLevelSelecting
-        
         if isLevelSelecting {
-            let menu = SKShapeNode(rectOf: CGSize(width: 600, height: 500), cornerRadius: 20)
-            menu.fillColor = .black
-            menu.strokeColor = .white
-            menu.lineWidth = 4
-            menu.name = "levelSelectMenu"
-            menu.zPosition = 300
-            cam.addChild(menu)
-            
-            let title = SKLabelNode(fontNamed: "Courier-Bold")
-            title.text = "LEVEL SELECT"
-            title.fontSize = 30
-            title.position = CGPoint(x: 0, y: 200)
-            menu.addChild(title)
-            
-            let subtitle = SKLabelNode(fontNamed: "Courier")
-            subtitle.text = "Type Level Number + Enter"
-            subtitle.fontSize = 16
-            subtitle.position = CGPoint(x: 0, y: 170)
-            menu.addChild(subtitle)
-            
+            let menu = SKShapeNode(rectOf: CGSize(width: 600, height: 500), cornerRadius: 20); menu.fillColor = .black; menu.strokeColor = .white; menu.lineWidth = 4; menu.name = "levelSelectMenu"; menu.zPosition = 300; cam.addChild(menu)
+            let title = SKLabelNode(fontNamed: "Courier-Bold"); title.text = "LEVEL SELECT"; title.fontSize = 30; title.position = CGPoint(x: 0, y: 200); menu.addChild(title)
+            let subtitle = SKLabelNode(fontNamed: "Courier"); subtitle.text = "Type Level Number + Enter"; subtitle.fontSize = 16; subtitle.position = CGPoint(x: 0, y: 170); menu.addChild(subtitle)
             let maxLevel = max(1, UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel"))
             for i in 1...15 {
-                let label = SKLabelNode(fontNamed: "Courier")
-                label.text = "\(i)"
-                label.fontSize = 24
-                let col = (i - 1) % 5
-                let row = (i - 1) / 5
-                label.position = CGPoint(x: -200 + CGFloat(col * 100), y: 80 - CGFloat(row * 80))
-                label.fontColor = i <= maxLevel ? .green : .darkGray
-                menu.addChild(label)
+                let label = SKLabelNode(fontNamed: "Courier"); label.text = "\(i)"; label.fontSize = 24
+                let col = (i - 1) % 5; let row = (i - 1) / 5; label.position = CGPoint(x: -200 + CGFloat(col * 100), y: 80 - CGFloat(row * 80))
+                label.fontColor = i <= maxLevel ? .green : .darkGray; menu.addChild(label)
             }
-        } else {
-            cam.childNode(withName: "levelSelectMenu")?.removeFromParent()
-        }
+        } else { cam.childNode(withName: "levelSelectMenu")?.removeFromParent() }
     }
     
     func startNextLevel() {
-        if levelManager.currentLevel >= 15 {
-            showWinScreen()
-            return
-        }
+        if levelManager.currentLevel >= 15 { showWinScreen(); return }
         goToLevel(levelManager.currentLevel + 1)
     }
     
@@ -1101,36 +809,23 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
             if level == 10 { label.text = "BOSS: GATEKEEPER" }
             if level == 15 { label.text = "THE HYDRA" }
         }
-        player.position = CGPoint(x: -200, y: 0)
-        player.physicsBody?.velocity = .zero
-        player.health = 100
-        player.reset()
+        player.position = CGPoint(x: -200, y: 0); player.physicsBody?.velocity = .zero; player.health = 100; player.reset()
     }
     
     var levelInputBuffer = ""
     
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 37 { // 'L' key
-            toggleLevelSelect()
-            return
-        }
-        
+        if event.keyCode == 37 { toggleLevelSelect(); return }
         if isLevelSelecting {
-            if event.keyCode == 36 { // Enter
+            if event.keyCode == 36 {
                 if let level = Int(levelInputBuffer) {
                     let maxLevel = max(1, UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel"))
-                    if level > 0 && level <= maxLevel {
-                        goToLevel(level)
-                        toggleLevelSelect()
-                    }
+                    if level > 0 && level <= maxLevel { goToLevel(level); toggleLevelSelect() }
                 }
                 levelInputBuffer = ""
-            } else if let chars = event.characters, let _ = Int(chars) {
-                levelInputBuffer += chars
-            }
+            } else if let chars = event.characters, let _ = Int(chars) { levelInputBuffer += chars }
             return
         }
-        
         switch event.keyCode {
         case 0: leftPressed = true
         case 2: rightPressed = true
@@ -1149,56 +844,57 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         }
     }
     
-    override func mouseDown(with event: NSEvent) {
-        if !isLevelSelecting {
-            player.shoot(scene: self)
-        }
-    }
+    override func mouseDown(with event: NSEvent) { if !isLevelSelecting { player.shoot(scene: self) } }
     
     func didBegin(_ contact: SKPhysicsContact) {
         let maskA = contact.bodyA.categoryBitMask
         let maskB = contact.bodyB.categoryBitMask
         
-        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
-           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
-            player.isGrounded = true
+        let playerNode = (maskA == PhysicsCategory.player) ? contact.bodyA.node : ((maskB == PhysicsCategory.player) ? contact.bodyB.node : nil)
+        let otherNode = (maskA == PhysicsCategory.player) ? contact.bodyB.node : ((maskB == PhysicsCategory.player) ? contact.bodyA.node : nil)
+        
+        if let player = playerNode as? Player, let other = otherNode {
+            let otherMask = other.physicsBody?.categoryBitMask ?? 0
+            
+            // Wall/Ground Check for Jump
+            if otherMask == PhysicsCategory.ground || otherMask == PhysicsCategory.movingPlatform {
+                let playerBottom = player.position.y - (player.size.height / 2)
+                let otherTop = other.position.y + (other.frame.size.height / 2)
+                
+                if playerBottom > otherTop - 10 {
+                    player.isGrounded = true
+                } else {
+                    // Wall check
+                    if player.position.x < other.position.x {
+                        player.isTouchingWallRight = true
+                    } else {
+                        player.isTouchingWallLeft = true
+                    }
+                }
+            }
+            
+            if otherMask == PhysicsCategory.portal { startNextLevel() }
+            if otherMask == PhysicsCategory.trap { player.takeDamage(25) }
+            if otherMask == PhysicsCategory.enemyProjectile { player.takeDamage(15); other.removeFromParent() }
+            if otherMask == PhysicsCategory.enemy || otherMask == PhysicsCategory.boss { player.takeDamage(20) }
         }
         
-        if (maskA == PhysicsCategory.player && maskB == PhysicsCategory.portal) ||
-           (maskB == PhysicsCategory.player && maskA == PhysicsCategory.portal) {
-            startNextLevel()
-        }
-        
+        // Projectile collisions
         if (maskA == PhysicsCategory.playerProjectile && (maskB == PhysicsCategory.enemy || maskB == PhysicsCategory.boss)) ||
            (maskB == PhysicsCategory.playerProjectile && (maskA == PhysicsCategory.enemy || maskA == PhysicsCategory.boss)) {
             let projectile = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyA.node : contact.bodyB.node
             let enemy = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyB.node : contact.bodyA.node
-            projectile?.removeFromParent()
-            (enemy as? Enemy)?.takeDamage(amount: 1)
-        }
-        
-        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.enemy || maskB == PhysicsCategory.enemyProjectile || maskB == PhysicsCategory.boss || maskB == PhysicsCategory.trap)) ||
-           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.enemy || maskA == PhysicsCategory.enemyProjectile || maskA == PhysicsCategory.boss || maskA == PhysicsCategory.trap)) {
-            let other = (maskA == PhysicsCategory.player) ? contact.bodyB.node : contact.bodyA.node
-            var damage = 10
-            if other?.physicsBody?.categoryBitMask == PhysicsCategory.trap { damage = 25 }
-            else if let enemy = other as? Enemy {
-                if enemy.type == .boss || enemy.type == .miniboss { damage = 25 }
-            } else if other?.physicsBody?.categoryBitMask == PhysicsCategory.enemyProjectile {
-                damage = 15
-                other?.removeFromParent()
-            }
-            player.takeDamage(damage)
+            projectile?.removeFromParent(); (enemy as? Enemy)?.takeDamage(amount: 1)
         }
     }
     
     func didEnd(_ contact: SKPhysicsContact) {
         let maskA = contact.bodyA.categoryBitMask
         let maskB = contact.bodyB.categoryBitMask
-        
-        if (maskA == PhysicsCategory.player && (maskB == PhysicsCategory.ground || maskB == PhysicsCategory.movingPlatform)) ||
-           (maskB == PhysicsCategory.player && (maskA == PhysicsCategory.ground || maskA == PhysicsCategory.movingPlatform)) {
+        if maskA == PhysicsCategory.player || maskB == PhysicsCategory.player {
             player.isGrounded = false
+            player.isTouchingWallLeft = false
+            player.isTouchingWallRight = false
         }
     }
 }
