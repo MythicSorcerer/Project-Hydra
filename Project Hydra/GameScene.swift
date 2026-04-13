@@ -516,7 +516,6 @@ class HydraBoss: SKNode {
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func updateNecks() {
-        let bodyTop: CGFloat = 70
         for (i, head) in heads.enumerated() {
             guard headHealth[i] > 0 else {
                 necks[i].isHidden = true
@@ -524,9 +523,12 @@ class HydraBoss: SKNode {
             }
             necks[i].isHidden = false
             let startX = head.position.x
+            let bodyTop: CGFloat = 70
+            // Curved neck using quadratic bezier
+            let midY = (bodyTop + head.position.y) / 2
             let path = CGMutablePath()
             path.move(to: CGPoint(x: startX, y: bodyTop))
-            path.addLine(to: head.position)
+            path.addQuadCurve(to: head.position, control: CGPoint(x: startX + 10, y: midY))
             necks[i].path = path
         }
     }
@@ -615,28 +617,20 @@ class HydraBoss: SKNode {
                 if Int.random(in: 0...60) < 1 {
                     shootFromHead(headIndex: i, target: playerWorldPos)
                 }
-                let offset = sin(currentTime * 2 + CGFloat(i)) * 20
-                head.position.y = 100 + offset
             }
         case .charging:
             let speed: CGFloat = 350
             bodyNode.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
-            for head in heads { head.position.y = 60 }
         case .summoning:
             if Int.random(in: 0...80) < 2 {
                 let spawn = Enemy(type: .hydraSpawn)
                 spawn.position = self.position
                 self.scene?.addChild(spawn)
             }
-            for (i, head) in heads.enumerated() where headHealth[i] > 0 {
-                let offset = sin(currentTime * 3 + CGFloat(i)) * 15
-                head.position.y = 80 + offset
-            }
         case .resting:
             bodyNode.physicsBody?.velocity = .zero
             let targetY: CGFloat = -100
             self.position.y += (targetY - self.position.y) * 0.05
-            for head in heads { head.position.y = 40 }
         }
         updateNecks()
     }
