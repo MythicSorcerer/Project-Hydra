@@ -464,6 +464,7 @@ enum HydraState { case shooting, charging, summoning, resting }
 class HydraBoss: SKNode {
     var bodyNode: SKSpriteNode!
     var heads: [SKSpriteNode] = []
+    var necks: [SKShapeNode] = []
     var headHealth: [Int] = []
     var headMaxHealth: [Int] = []
     var bodyHealth = 600
@@ -492,7 +493,7 @@ class HydraBoss: SKNode {
         bodyNode.physicsBody?.affectedByGravity = true
         self.addChild(bodyNode)
 
-        // Heads (visual only, no physics - they follow the body)
+        // Heads and necks
         for i in 0..<3 {
             let head = SKSpriteNode(imageNamed: "HydraHead")
             head.size = CGSize(width: 80, height: 80)
@@ -502,9 +503,31 @@ class HydraBoss: SKNode {
             headMaxHealth.append(150)
             heads.append(head)
             self.addChild(head)
+
+            let neck = SKShapeNode()
+            neck.strokeColor = .green
+            neck.lineWidth = 12
+            neck.glowWidth = 4
+            neck.zPosition = 4
+            necks.append(neck)
+            self.addChild(neck)
         }
     }
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func updateNecks() {
+        for (i, head) in heads.enumerated() {
+            guard headHealth[i] > 0 else {
+                necks[i].isHidden = true
+                continue
+            }
+            necks[i].isHidden = false
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 0, y: 60))
+            path.addLine(to: head.position)
+            necks[i].path = path
+        }
+    }
 
     func scenePosition() -> CGPoint {
         return self.convert(bodyNode.position, to: self.scene!)
@@ -613,6 +636,7 @@ class HydraBoss: SKNode {
             self.position.y += (targetY - self.position.y) * 0.05
             for head in heads { head.position.y = 40 }
         }
+        updateNecks()
     }
 
     func switchState() {
