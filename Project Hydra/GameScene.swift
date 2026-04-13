@@ -675,7 +675,7 @@ class LevelManager {
 // -----------------------------------------------------------------------------
 
 class GameScene: SKScene, SKPhysicsContactDelegate {
-    
+
     var player: Player!
     var levelManager: LevelManager!
     var cam: SKCameraNode!
@@ -684,6 +684,8 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     var rightPressed = false
     var jumpPressed = false
     var isLevelSelecting = false
+    var levelTitleClickCount = 0
+    var levelTitleLastClickTime: TimeInterval = 0
     
     override func didMove(to view: SKView) {
         self.removeAllChildren()
@@ -783,9 +785,10 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     
     func toggleLevelSelect() {
         isLevelSelecting = !isLevelSelecting
+        levelTitleClickCount = 0
         if isLevelSelecting {
             let menu = SKShapeNode(rectOf: CGSize(width: 600, height: 500), cornerRadius: 20); menu.fillColor = .black; menu.strokeColor = .white; menu.lineWidth = 4; menu.name = "levelSelectMenu"; menu.zPosition = 300; cam.addChild(menu)
-            let title = SKLabelNode(fontNamed: "Courier-Bold"); title.text = "LEVEL SELECT"; title.fontSize = 30; title.position = CGPoint(x: 0, y: 200); menu.addChild(title)
+            let title = SKLabelNode(fontNamed: "Courier-Bold"); title.text = "LEVEL SELECT"; title.fontSize = 30; title.position = CGPoint(x: 0, y: 200); title.name = "levelSelectTitle"; title.isUserInteractionEnabled = true; menu.addChild(title)
             let subtitle = SKLabelNode(fontNamed: "Courier"); subtitle.text = "Type Level Number + Enter"; subtitle.fontSize = 16; subtitle.position = CGPoint(x: 0, y: 170); menu.addChild(subtitle)
             let maxLevel = max(1, UserDefaults.standard.integer(forKey: "ProjectHydra_MaxLevel"))
             for i in 1...15 {
@@ -844,7 +847,42 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         }
     }
     
-    override func mouseDown(with event: NSEvent) { if !isLevelSelecting { player.shoot(scene: self) } }
+    override func mouseDown(with event: NSEvent) {
+        if isLevelSelecting {
+            let location = event.location(in: self)
+            let nodesAtLocation = self.nodes(at: location)
+            for node in nodesAtLocation {
+                if node.name == "levelSelectTitle" {
+                    let currentTime = event.timestamp
+                    if currentTime - levelTitleLastClickTime < 1.0 {
+                        levelTitleClickCount += 1
+                    } else {
+                        levelTitleClickCount = 1
+                    }
+                    levelTitleLastClickTime = currentTime
+                    if levelTitleClickCount >= 7 {
+                        UserDefaults.standard.set(15, forKey: "ProjectHydra_MaxLevel")
+                        if let menu = cam.childNode(withName: "levelSelectMenu") {
+                            for child in menu.children {
+                                if let label = child as? SKLabelNode, label.fontColor == .darkGray {
+                                    label.fontColor = .green
+                                }
+                            }
+                        }
+                        let flash = SKAction.sequence([
+                            SKAction.colorize(with: .green, colorBlendFactor: 1.0, duration: 0.1),
+                            SKAction.colorize(with: .white, colorBlendFactor: 0.0, duration: 0.1)
+                        ])
+                        if let title = node as? SKLabelNode {
+                            title.run(flash)
+                        }
+                    }
+                    return
+                }
+            }
+        }
+        if !isLevelSelecting { player.shoot(scene: self) }
+    }
     
     func didBegin(_ contact: SKPhysicsContact) {
         let maskA = contact.bodyA.categoryBitMask
