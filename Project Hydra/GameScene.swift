@@ -462,65 +462,159 @@ class Trap: SKSpriteNode {
 enum HydraState { case shooting, charging, summoning, resting }
 
 class HydraBoss: SKNode {
-    var body: Enemy!
-    var heads: [Enemy] = []
+    var bodyNode: SKSpriteNode!
+    var heads: [SKSpriteNode] = []
+    var headHealth: [Int] = []
+    var headMaxHealth: [Int] = []
+    var bodyHealth = 600
+    var maxBodyHealth = 600
     var state: HydraState = .shooting
     var stateTimer: TimeInterval = 0
     var nextStateTime: TimeInterval = 5.0
-    
+    var bossName = "PROJECT HYDRA: CORE"
+
     init(position: CGPoint) {
         super.init()
         self.position = position
         self.name = "hydra_boss"
-        body = Enemy(type: .hydraHead)
-        body.texture = SKTexture(imageNamed: "HydraBody")
-        body.size = CGSize(width: 200, height: 150)
-        body.bossName = "PROJECT HYDRA: CORE"
-        body.health = 600
-        body.maxHealth = 600
-        body.position = .zero
-        self.addChild(body)
+
+        // Body
+        bodyNode = SKSpriteNode(imageNamed: "HydraBody")
+        bodyNode.size = CGSize(width: 200, height: 150)
+        bodyNode.position = .zero
+        bodyNode.zPosition = 5
+        bodyNode.physicsBody = SKPhysicsBody(rectangleOf: bodyNode.size)
+        bodyNode.physicsBody?.categoryBitMask = PhysicsCategory.boss
+        bodyNode.physicsBody?.contactTestBitMask = PhysicsCategory.playerProjectile | PhysicsCategory.player
+        bodyNode.physicsBody?.collisionBitMask = PhysicsCategory.ground | PhysicsCategory.wall
+        bodyNode.physicsBody?.allowsRotation = false
+        bodyNode.physicsBody?.friction = 0.5
+        bodyNode.physicsBody?.affectedByGravity = true
+        self.addChild(bodyNode)
+
+        // Heads (visual only, no physics - they follow the body)
         for i in 0..<3 {
-            let head = Enemy(type: .hydraHead)
-            head.health = 150
-            head.maxHealth = 150
-            head.position = CGPoint(x: -80 + CGFloat(i * 80), y: 80)
+            let head = SKSpriteNode(imageNamed: "HydraHead")
+            head.size = CGSize(width: 80, height: 80)
+            head.position = CGPoint(x: -80 + CGFloat(i * 80), y: 100)
+            head.zPosition = 6
+            headHealth.append(150)
+            headMaxHealth.append(150)
             heads.append(head)
             self.addChild(head)
         }
     }
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    
+
+    func scenePosition() -> CGPoint {
+        return self.convert(bodyNode.position, to: self.scene!)
+    }
+
+    func shootFromHead(headIndex: Int, target: CGPoint) {
+        guard headIndex < heads.count, headHealth[headIndex] > 0 else { return }
+        let head = heads[headIndex]
+        let worldPos = self.convert(head.position, to: self.scene!)
+
+        let bullet = SKSpriteNode(imageNamed: "BulletEnemy")
+        bullet.size = CGSize(width: 15, height: 15)
+        bullet.position = worldPos
+        bullet.zPosition = 9
+        bullet.physicsBody = SKPhysicsBody(circleOfRadius: 7)
+        bullet.physicsBody?.categoryBitMask = PhysicsCategory.enemyProjectile
+        bullet.physicsBody?.contactTestBitMask = PhysicsCategory.player
+        bullet.physicsBody?.collisionBitMask = PhysicsCategory.none
+        bullet.physicsBody?.affectedByGravity = false
+
+        let dx = target.x - worldPos.x
+        let dy = target.y - worldPos.y
+        let angle = atan2(dy, dx)
+        let speed: CGFloat = 350
+        bullet.physicsBody?.velocity = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
+        self.scene?.addChild(bullet)
+        bullet.run(SKAction.sequence([SKAction.wait(forDuration: 4.0), SKAction.removeFromParent()]))
+    }
+
+    func takeHeadDamage(index: Int, amount: Int) {
+        guard index < headHealth.count else { return }
+        headHealth[index] -= amount
+        if headHealth[index] <= 0 {
+            headHealth[index] = 0
+            heads[index].run(SKAction.sequence([
+                SKAction.group([SKAction.scale(to: 1.5, duration: 0.1), SKAction.fadeOut(withDuration: 0.1)]),
+                SKAction.removeFromParent()
+            ]))
+        } else {
+            let flash = SKAction.sequence([
+                SKAction.colorize(with: .white, colorBlendFactor: 0.8, duration: 0.05),
+                SKAction.colorize(with: .white, colorBlendFactor: 0.0, duration: 0.05)
+            ])
+            heads[index].run(flash)
+        }
+    }
+
+    func takeBodyDamage(amount: Int) {
+        bodyHealth -= amount
+        if bodyHealth <= 0 {
+            bodyHealth = 0
+            let explosion = SKAction.sequence([
+                SKAction.group([SKAction.scale(to: 1.5, duration: 0.1), SKAction.fadeOut(withDuration: 0.1)]),
+                SKAction.removeFromParent()
+            ])
+            bodyNode.run(explosion)
+        } else {
+            let flash = SKAction.sequence([
+                SKAction.colorize(with: .white, colorBlendFactor: 0.8, duration: 0.05),
+                SKAction.colorize(with: .white, colorBlendFactor: 0.0, duration: 0.05)
+            ])
+            bodyNode.run(flash)
+        }
+    }
+
+    func isAlive() -> Bool {
+        return bodyHealth > 0
+    }
+
     func update(player: Player, currentTime: TimeInterval, dt: TimeInterval) {
-        if body.health <= 0 { return }
-        if self.position.y < -1200 { body.health = 0; return }
+        if !isAlive() { return }
+        if self.position.y < -1200 { bodyHealth = 0; return }
+
         stateTimer += dt
         if stateTimer >= nextStateTime { stateTimer = 0; switchState() }
+
+        let playerWorldPos = player.position
+        let dx = playerWorldPos.x - self.position.x
+
         switch state {
         case .shooting:
-            for head in heads where head.health > 0 {
-                if Int.random(in: 0...60) < 1 { head.shoot(target: player.position) }
-                let offset = sin(currentTime * 2 + CGFloat(heads.firstIndex(of: head)!)) * 20
-                head.position.y = 80 + offset
+            for (i, head) in heads.enumerated() where headHealth[i] > 0 {
+                if Int.random(in: 0...60) < 1 {
+                    shootFromHead(headIndex: i, target: playerWorldPos)
+                }
+                let offset = sin(currentTime * 2 + CGFloat(i)) * 20
+                head.position.y = 100 + offset
             }
         case .charging:
-            let dx = player.position.x - self.position.x
             let speed: CGFloat = 350
-            self.body.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
-            for head in heads { head.position.y = 40 }
+            bodyNode.physicsBody?.velocity.dx = dx > 0 ? speed : -speed
+            for head in heads { head.position.y = 60 }
         case .summoning:
             if Int.random(in: 0...80) < 2 {
                 let spawn = Enemy(type: .hydraSpawn)
                 spawn.position = self.position
                 self.scene?.addChild(spawn)
             }
+            for (i, head) in heads.enumerated() where headHealth[i] > 0 {
+                let offset = sin(currentTime * 3 + CGFloat(i)) * 15
+                head.position.y = 80 + offset
+            }
         case .resting:
-            self.body.physicsBody?.velocity = .zero
+            bodyNode.physicsBody?.velocity = .zero
             let targetY: CGFloat = -100
             self.position.y += (targetY - self.position.y) * 0.05
-            for head in heads { head.position.y = 20 }
+            for head in heads { head.position.y = 40 }
         }
     }
+
     func switchState() {
         let states: [HydraState] = [.shooting, .charging, .summoning, .resting]
         state = states.randomElement()!
@@ -663,7 +757,7 @@ class LevelManager {
         let enemies = scene.children.filter { ($0.name == "enemy" || $0.name == "hydra_boss") }
         var totalHealth = 0
         for node in enemies {
-            if let enemy = node as? Enemy { if enemy.health > 0 { totalHealth += 1 } } else if let hydra = node as? HydraBoss { if hydra.body.health > 0 { totalHealth += 1 } }
+            if let enemy = node as? Enemy { if enemy.health > 0 { totalHealth += 1 } } else if let hydra = node as? HydraBoss { if hydra.isAlive() { totalHealth += 1 } }
         }
         if totalHealth == 0 && !portalSpawned { spawnPortal() }
         return totalHealth
@@ -759,14 +853,33 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     func updateBossBar() {
         let boss = self.children.compactMap { $0 as? Enemy }.first { $0.bossName != nil }
         let hydra = self.childNode(withName: "hydra_boss") as? HydraBoss
-        let activeBoss = boss ?? hydra?.body
-        if let b = activeBoss {
-            cam.childNode(withName: "bossBarBg")?.isHidden = false; cam.childNode(withName: "bossBarFill")?.isHidden = false
+
+        if let hydra = hydra, hydra.isAlive() {
+            cam.childNode(withName: "bossBarBg")?.isHidden = false
+            cam.childNode(withName: "bossBarFill")?.isHidden = false
             cam.childNode(withName: "bossNameLabel")?.isHidden = false
-            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode { let pct = CGFloat(b.health) / CGFloat(b.maxHealth); fill.xScale = max(0, pct) }
-            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode { nameLabel.text = b.bossName ?? "BOSS" }
+            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode {
+                let pct = CGFloat(hydra.bodyHealth) / CGFloat(hydra.maxBodyHealth)
+                fill.xScale = max(0, pct)
+            }
+            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode {
+                nameLabel.text = hydra.bossName
+            }
+        } else if let b = boss {
+            cam.childNode(withName: "bossBarBg")?.isHidden = false
+            cam.childNode(withName: "bossBarFill")?.isHidden = false
+            cam.childNode(withName: "bossNameLabel")?.isHidden = false
+            if let fill = cam.childNode(withName: "bossBarFill") as? SKShapeNode {
+                let pct = CGFloat(b.health) / CGFloat(b.maxHealth)
+                fill.xScale = max(0, pct)
+            }
+            if let nameLabel = cam.childNode(withName: "bossNameLabel") as? SKLabelNode {
+                nameLabel.text = b.bossName ?? "BOSS"
+            }
         } else {
-            cam.childNode(withName: "bossBarBg")?.isHidden = true; cam.childNode(withName: "bossBarFill")?.isHidden = true; cam.childNode(withName: "bossNameLabel")?.isHidden = true
+            cam.childNode(withName: "bossBarBg")?.isHidden = true
+            cam.childNode(withName: "bossBarFill")?.isHidden = true
+            cam.childNode(withName: "bossNameLabel")?.isHidden = true
         }
     }
     
@@ -887,18 +1000,18 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     func didBegin(_ contact: SKPhysicsContact) {
         let maskA = contact.bodyA.categoryBitMask
         let maskB = contact.bodyB.categoryBitMask
-        
+
         let playerNode = (maskA == PhysicsCategory.player) ? contact.bodyA.node : ((maskB == PhysicsCategory.player) ? contact.bodyB.node : nil)
         let otherNode = (maskA == PhysicsCategory.player) ? contact.bodyB.node : ((maskB == PhysicsCategory.player) ? contact.bodyA.node : nil)
-        
+
         if let player = playerNode as? Player, let other = otherNode {
             let otherMask = other.physicsBody?.categoryBitMask ?? 0
-            
+
             // Wall/Ground Check for Jump
             if otherMask == PhysicsCategory.ground || otherMask == PhysicsCategory.movingPlatform {
                 let playerBottom = player.position.y - (player.size.height / 2)
                 let otherTop = other.position.y + (other.frame.size.height / 2)
-                
+
                 if playerBottom > otherTop - 10 {
                     player.isGrounded = true
                 } else {
@@ -910,19 +1023,27 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
                     }
                 }
             }
-            
+
             if otherMask == PhysicsCategory.portal { startNextLevel() }
             if otherMask == PhysicsCategory.trap { player.takeDamage(25) }
             if otherMask == PhysicsCategory.enemyProjectile { player.takeDamage(15); other.removeFromParent() }
             if otherMask == PhysicsCategory.enemy || otherMask == PhysicsCategory.boss { player.takeDamage(20) }
         }
-        
+
         // Projectile collisions
         if (maskA == PhysicsCategory.playerProjectile && (maskB == PhysicsCategory.enemy || maskB == PhysicsCategory.boss)) ||
            (maskB == PhysicsCategory.playerProjectile && (maskA == PhysicsCategory.enemy || maskA == PhysicsCategory.boss)) {
             let projectile = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyA.node : contact.bodyB.node
             let enemy = (maskA == PhysicsCategory.playerProjectile) ? contact.bodyB.node : contact.bodyA.node
-            projectile?.removeFromParent(); (enemy as? Enemy)?.takeDamage(amount: 1)
+
+            projectile?.removeFromParent()
+
+            // Check if it hit the Hydra body
+            if let hydra = enemy?.parent as? HydraBoss, enemy === hydra.bodyNode {
+                hydra.takeBodyDamage(amount: 1)
+            } else if let e = enemy as? Enemy {
+                e.takeDamage(amount: 1)
+            }
         }
     }
     
