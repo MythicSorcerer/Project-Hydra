@@ -516,14 +516,16 @@ class HydraBoss: SKNode {
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func updateNecks() {
+        let bodyTop: CGFloat = 70
         for (i, head) in heads.enumerated() {
             guard headHealth[i] > 0 else {
                 necks[i].isHidden = true
                 continue
             }
             necks[i].isHidden = false
+            let startX = head.position.x
             let path = CGMutablePath()
-            path.move(to: CGPoint(x: 0, y: 60))
+            path.move(to: CGPoint(x: startX, y: bodyTop))
             path.addLine(to: head.position)
             necks[i].path = path
         }
